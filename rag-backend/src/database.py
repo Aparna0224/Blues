@@ -25,8 +25,11 @@ class MongoDBClient:
         try:
             self.client = MongoClient(
                 Config.MONGO_URI,
-                serverSelectionTimeoutMS=5000,
-                connectTimeoutMS=5000
+                serverSelectionTimeoutMS=30000,  # 30 seconds
+                connectTimeoutMS=30000,
+                socketTimeoutMS=30000,
+                retryWrites=True,
+                w='majority'
             )
             # Verify connection
             self.client.admin.command('ping')

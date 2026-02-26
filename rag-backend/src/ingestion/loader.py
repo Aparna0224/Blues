@@ -51,8 +51,7 @@ class PaperIngestor:
         """
         Fetch papers from OpenAlex API.
         
-        Uses API key for higher rate limits (100k credits/day vs 100/day).
-        Cost: list request = 10 credits, singleton = 1 credit.
+        Uses mailto for polite pool access (higher rate limits).
         
         Args:
             query: Search query
@@ -66,19 +65,15 @@ class PaperIngestor:
             params = {
                 "search": query,
                 "per_page": min(max_results, 50),
-                "sort": "-publication_year",
-                "filter": "has_abstract:true"  # Only fetch papers with abstracts
+                # Note: sort parameter format changed - use 'publication_year:desc' or remove
             }
             
-            # Add API key if available (increases rate limit from 100 to 100k credits/day)
-            if self.openalex_api_key:
-                params["api_key"] = self.openalex_api_key
-                print(f"✓ Using OpenAlex API key (100k credits/day)")
-            else:
-                print(f"⚠ No OpenAlex API key - limited to 100 credits/day")
+            # OpenAlex uses 'mailto' for polite pool access
+            params["mailto"] = "aparna6024@gmail.com"
+            print(f"✓ Using OpenAlex polite pool")
             
             headers = {
-                "User-Agent": "RAG-Backend/0.1.0 (mailto:user@example.com)"
+                "User-Agent": "RAG-Backend/0.1.0"
             }
             
             response = requests.get(

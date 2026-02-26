@@ -86,10 +86,12 @@ class AnswerGenerator:
         
         for paper_key, chunks in evidence_by_paper.items():
             citations += f"📄 {paper_key}\n"
-            citations += f"   Relevance Scores: {', '.join([f'{c['similarity_score']:.4f}' for c in chunks])}\n"
+            scores = ", ".join([f"{c.get('similarity_score', 0):.4f}" for c in chunks])
+            citations += f"   Relevance Scores: {scores}\n"
             citations += f"   Evidence:\n"
             for i, chunk in enumerate(chunks, 1):
-                citations += f"     {i}. {chunk['text'][:80]}...\n"
+                chunk_text = chunk.get('text', '')[:80]
+                citations += f"     {i}. {chunk_text}...\n"
             citations += "\n"
         
         return citations
