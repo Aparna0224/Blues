@@ -32,8 +32,20 @@ class Config:
     TOP_K = int(os.getenv("TOP_K", 5))
     
     # OpenAlex API Settings
-    OPENALEX_BASE_URL = "https://api.openalex.org"
-    OPENALEX_TIMEOUT = 10
+    # Rate: 100k credits/day with key, 100 credits/day without
+    # Cost: list request = 10 credits, singleton = 1 credit
+    OPENALEX_API_KEY = os.getenv("OPENALEX_API_KEY", "")
+    OPENALEX_BASE_URL = os.getenv("OPENALEX_BASE_URL", "https://api.openalex.org")
+    OPENALEX_TIMEOUT = 30
+    
+    # Semantic Scholar API Settings
+    # Rate: 100 requests/5 minutes without key
+    SEMANTIC_SCHOLAR_API_KEY = os.getenv("SEMANTIC_SCHOLAR_API_KEY", "")
+    SEMANTIC_SCHOLAR_BASE_URL = os.getenv("SEMANTIC_SCHOLAR_BASE_URL", "https://api.semanticscholar.org/graph/v1")
+    SEMANTIC_SCHOLAR_TIMEOUT = 30
+    
+    # Default Paper Source
+    DEFAULT_PAPER_SOURCE = os.getenv("DEFAULT_PAPER_SOURCE", "openalex")
     
     # Chunking Settings
     MIN_CHUNK_SENTENCES = 3
