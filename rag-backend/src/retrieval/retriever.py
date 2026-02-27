@@ -11,10 +11,26 @@ from src.config import Config
 class Retriever:
     """Retrieve relevant chunks based on query."""
     
-    def __init__(self):
+    def __init__(self, use_evidence: bool = False):
+        """
+        Initialize retriever.
+        
+        Args:
+            use_evidence: If True, enables Stage 2 sentence-level evidence extraction
+        """
         self.embedder = EmbeddingGenerator()
         self.vector_store = FAISSVectorStore()
         self.mongo = get_mongo_client()
+        self.use_evidence = use_evidence
+        self._evidence_extractor = None
+    
+    @property
+    def evidence_extractor(self):
+        """Lazy load evidence extractor only when needed."""
+        if self._evidence_extractor is None and self.use_evidence:
+            from src.evidence.extractor import EvidenceExtractor
+            self._evidence_extractor = EvidenceExtractor()
+        return self._evidence_extractor
     
     def retrieve_chunks(self, query: str, top_k: int = None) -> List[Dict[str, Any]]:
         """
@@ -25,7 +41,8 @@ class Retriever:
             top_k: Number of top chunks to retrieve
             
         Returns:
-            List of chunk objects with metadata and similarity scores
+            List of chunk objects with metadata and similarity scores.
+            If use_evidence=True, includes sentence-level evidence.
         """
         if top_k is None:
             top_k = Config.TOP_K
@@ -66,11 +83,36 @@ class Retriever:
                     results.append(result)
             
             print(f"✓ Retrieved {len(results)} relevant chunks")
+            
+            # Stage 2: Extract sentence-level evidence if enabled
+            if self.use_evidence and results:
+                results = self._extract_evidence(query, results)
+            
             return results
         
         except Exception as e:
             print(f"✗ Error retrieving chunks: {e}")
             return []
+    
+    def _extract_evidence(self, query: str, chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Extract sentence-level evidence from chunks (Stage 2).
+        
+        Args:
+            query: The user query
+            chunks: Retrieved chunks
+            
+        Returns:
+            Chunks enhanced with evidence_sentence and evidence_score
+        """
+        if not self.evidence_extractor:
+            return chunks
+        
+        print(f"🔍 Extracting sentence-level evidence...")
+        enhanced_chunks = self.evidence_extractor.extract_evidence_from_chunks(query, chunks)
+        print(f"✓ Extracted evidence from {len(enhanced_chunks)} chunks")
+        
+        return enhanced_chunks
     
     def format_retrieval_results(self, results: List[Dict[str, Any]]) -> str:
         """

@@ -19,10 +19,10 @@ def cli():
 @cli.command()
 @click.option('--query', prompt='Enter search query', help='Search query for papers')
 @click.option('--max-results', default=10, help='Maximum papers to fetch')
-@click.option('--source', default=None, type=click.Choice(['openalex', 'semantic_scholar']), 
-              help='Paper source API (default: from config)')
+@click.option('--source', default=None, type=click.Choice(['openalex', 'semantic_scholar', 'both']), 
+              help='Paper source API (default: from config, use "both" for dual API)')
 def ingest(query, max_results, source):
-    """Ingest papers from OpenAlex or Semantic Scholar API."""
+    """Ingest papers from OpenAlex, Semantic Scholar, or both APIs."""
     source_name = source or Config.DEFAULT_PAPER_SOURCE
     click.echo(f"\n📚 Starting ingestion for: {query}")
     click.echo(f"   Source: {source_name}")
@@ -78,24 +78,39 @@ def build_index():
 @cli.command()
 @click.option('--query', prompt='Enter your question', help='Query to answer')
 @click.option('--top-k', default=5, help='Number of chunks to retrieve')
-def query(query, top_k):
+@click.option('--evidence', is_flag=True, default=False, 
+              help='Enable Stage 2 sentence-level evidence extraction')
+def query(query, top_k, evidence):
     """Query the RAG system."""
-    click.echo(f"\n🔍 Processing query: {query}\n")
+    click.echo(f"\n🔍 Processing query: {query}")
+    if evidence:
+        click.echo("   📝 Sentence-level evidence: ENABLED\n")
+    else:
+        click.echo("")
     try:
         mongo = get_mongo_client()
         mongo.connect()
-        retriever = Retriever()
+        retriever = Retriever(use_evidence=evidence)
         retrieved_chunks = retriever.retrieve_chunks(query, top_k)
         if not retrieved_chunks:
             click.echo("❌ No relevant chunks found.")
             return
-        click.echo(retriever.format_retrieval_results(retrieved_chunks))
+        
+        # Format output based on evidence mode
+        if evidence:
+            # Stage 2: Show sentence-level evidence
+            from src.evidence.extractor import EvidenceExtractor
+            extractor = EvidenceExtractor()
+            click.echo(extractor.format_evidence_output(retrieved_chunks))
+        else:
+            click.echo(retriever.format_retrieval_results(retrieved_chunks))
+        
         generator = AnswerGenerator()
         answer = generator.generate_answer(query, retrieved_chunks)
         click.echo(answer)
         final_output = generator.format_final_output(answer, retrieved_chunks)
         output_file = "rag_output.txt"
-        with open(output_file, "w") as f:
+        with open(output_file, "w", encoding="utf-8") as f:
             f.write(final_output)
         click.echo(f"\n✅ Output saved to {output_file}")
     except Exception as e:

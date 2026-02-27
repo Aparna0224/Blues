@@ -1,6 +1,7 @@
 """Data ingestion from OpenAlex and Semantic Scholar APIs."""
 
 import requests
+import time
 import uuid
 from typing import List, Dict, Any, Optional
 from src.config import Config
@@ -42,10 +43,86 @@ class PaperIngestor:
         Returns:
             List of normalized paper objects
         """
-        if self.source == "semantic_scholar":
+        if self.source == "both":
+            return self._fetch_from_both(query, max_results)
+        elif self.source == "semantic_scholar":
             return self._fetch_from_semantic_scholar(query, max_results)
         else:
             return self._fetch_from_openalex(query, max_results)
+    
+    def _fetch_from_both(self, query: str, max_results: int = 10) -> List[Dict[str, Any]]:
+        """
+        Fetch papers from both OpenAlex and Semantic Scholar APIs.
+        
+        Combines results from both APIs with deduplication based on title similarity.
+        Splits max_results between both APIs (half each).
+        
+        Args:
+            query: Search query
+            max_results: Maximum total papers to fetch
+            
+        Returns:
+            List of normalized paper objects from both sources
+        """
+        per_source = max(max_results // 2, 5)  # At least 5 per source
+        
+        print(f"📚 Fetching from both OpenAlex and Semantic Scholar...")
+        
+        # Fetch from both sources
+        openalex_papers = self._fetch_from_openalex(query, per_source)
+        semantic_papers = self._fetch_from_semantic_scholar(query, per_source)
+        
+        # Combine and deduplicate
+        all_papers = self._deduplicate_papers(openalex_papers, semantic_papers)
+        
+        print(f"✓ Combined: {len(all_papers)} unique papers (OpenAlex: {len(openalex_papers)}, Semantic Scholar: {len(semantic_papers)})")
+        
+        return all_papers[:max_results]
+    
+    def _deduplicate_papers(self, papers1: List[Dict[str, Any]], papers2: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """
+        Deduplicate papers from two sources based on title similarity.
+        
+        Uses simple title normalization to detect duplicates.
+        Prefers papers with longer abstracts when duplicates found.
+        
+        Args:
+            papers1: First list of papers
+            papers2: Second list of papers
+            
+        Returns:
+            Deduplicated list of papers
+        """
+        def normalize_title(title: str) -> str:
+            """Normalize title for comparison."""
+            return title.lower().strip().replace("-", " ").replace(":", "")
+        
+        seen_titles = {}
+        result = []
+        
+        # Add papers from first source
+        for paper in papers1:
+            norm_title = normalize_title(paper.get("title", ""))
+            if norm_title and norm_title not in seen_titles:
+                seen_titles[norm_title] = paper
+                result.append(paper)
+        
+        # Add unique papers from second source
+        for paper in papers2:
+            norm_title = normalize_title(paper.get("title", ""))
+            if norm_title and norm_title not in seen_titles:
+                seen_titles[norm_title] = paper
+                result.append(paper)
+            elif norm_title in seen_titles:
+                # If duplicate found, keep the one with longer abstract
+                existing = seen_titles[norm_title]
+                if len(paper.get("abstract", "")) > len(existing.get("abstract", "")):
+                    # Replace with better version
+                    idx = result.index(existing)
+                    result[idx] = paper
+                    seen_titles[norm_title] = paper
+        
+        return result
     
     def _fetch_from_openalex(self, query: str, max_results: int = 10) -> List[Dict[str, Any]]:
         """
@@ -99,60 +176,79 @@ class PaperIngestor:
             print(f"✗ Error fetching papers from OpenAlex: {e}")
             return []
     
-    def _fetch_from_semantic_scholar(self, query: str, max_results: int = 10) -> List[Dict[str, Any]]:
+    def _fetch_from_semantic_scholar(self, query: str, max_results: int = 10, retries: int = 3) -> List[Dict[str, Any]]:
         """
         Fetch papers from Semantic Scholar API.
         
         Rate limit: 100 requests/5 minutes without API key.
+        Includes retry logic with exponential backoff for rate limits.
         
         Args:
             query: Search query
             max_results: Maximum papers to fetch
+            retries: Number of retry attempts for rate limit errors
             
         Returns:
             List of normalized paper objects
         """
-        try:
-            url = f"{self.semantic_scholar_base_url}/paper/search"
-            params = {
-                "query": query,
-                "limit": min(max_results, 100),
-                "fields": "paperId,title,abstract,year,citationCount"
-            }
-            
-            headers = {
-                "User-Agent": "RAG-Backend/0.1.0"
-            }
-            
-            # Add API key if available
-            if self.semantic_scholar_api_key:
-                headers["x-api-key"] = self.semantic_scholar_api_key
-                print(f"✓ Using Semantic Scholar API key")
-            else:
-                print(f"⚠ No Semantic Scholar API key - limited rate")
-            
-            response = requests.get(
-                url,
-                params=params,
-                headers=headers,
-                timeout=self.semantic_scholar_timeout
-            )
-            response.raise_for_status()
-            
-            data = response.json()
-            papers = []
-            
-            for work in data.get("data", []):
-                paper = self._normalize_semantic_scholar_paper(work)
-                if paper:
-                    papers.append(paper)
-            
-            print(f"✓ Fetched {len(papers)} papers from Semantic Scholar")
-            return papers
+        url = f"{self.semantic_scholar_base_url}/paper/search"
+        params = {
+            "query": query,
+            "limit": min(max_results, 100),
+            "fields": "paperId,title,abstract,year,citationCount"
+        }
         
-        except requests.RequestException as e:
-            print(f"✗ Error fetching papers from Semantic Scholar: {e}")
-            return []
+        headers = {
+            "User-Agent": "RAG-Backend/0.1.0"
+        }
+        
+        # Add API key if available
+        if self.semantic_scholar_api_key:
+            headers["x-api-key"] = self.semantic_scholar_api_key
+            print(f"✓ Using Semantic Scholar API key")
+        else:
+            print(f"⚠ No Semantic Scholar API key - limited rate")
+        
+        for attempt in range(retries):
+            try:
+                response = requests.get(
+                    url,
+                    params=params,
+                    headers=headers,
+                    timeout=self.semantic_scholar_timeout
+                )
+                
+                # Handle rate limit with retry
+                if response.status_code == 429:
+                    wait_time = 2 ** attempt  # Exponential backoff: 1, 2, 4 seconds
+                    print(f"⏳ Rate limited, waiting {wait_time}s (attempt {attempt + 1}/{retries})...")
+                    time.sleep(wait_time)
+                    continue
+                
+                response.raise_for_status()
+                
+                data = response.json()
+                papers = []
+                
+                for work in data.get("data", []):
+                    paper = self._normalize_semantic_scholar_paper(work)
+                    if paper:
+                        papers.append(paper)
+                
+                print(f"✓ Fetched {len(papers)} papers from Semantic Scholar")
+                return papers
+            
+            except requests.RequestException as e:
+                if attempt < retries - 1 and "429" in str(e):
+                    wait_time = 2 ** attempt
+                    print(f"⏳ Rate limited, waiting {wait_time}s (attempt {attempt + 1}/{retries})...")
+                    time.sleep(wait_time)
+                    continue
+                print(f"✗ Error fetching papers from Semantic Scholar: {e}")
+                return []
+        
+        print(f"✗ Semantic Scholar: Max retries exceeded")
+        return []
     
     def _normalize_openalex_paper(self, work: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Normalize OpenAlex paper data."""
