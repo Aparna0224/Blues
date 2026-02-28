@@ -48,5 +48,27 @@ class Config:
     DEFAULT_PAPER_SOURCE = os.getenv("DEFAULT_PAPER_SOURCE", "openalex")
     
     # Chunking Settings
-    MIN_CHUNK_SENTENCES = 3
-    MAX_CHUNK_SENTENCES = 5
+    MIN_CHUNK_SENTENCES = int(os.getenv("MIN_CHUNK_SENTENCES", "8"))
+    MAX_CHUNK_SENTENCES = int(os.getenv("MAX_CHUNK_SENTENCES", "12"))
+    
+    # LLM Settings (Stage 3)
+    # LLM_PROVIDER: "local" for Ollama, "gemini" for Google Gemini API, "groq" for Groq Cloud
+    LLM_PROVIDER = os.getenv("LLM_PROVIDER", "local")
+    
+    # Ollama (Local LLM) Settings
+    OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3:8b-instruct")
+    OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "120"))
+    
+    # Google Gemini API Settings
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+    GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "60"))
+    
+    # Groq Cloud API Settings (Fast inference with LPU)
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+    GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    GROQ_TIMEOUT = int(os.getenv("GROQ_TIMEOUT", "30"))
+    
+    # LLM Generation Settings
+    LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))

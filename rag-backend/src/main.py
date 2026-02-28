@@ -19,10 +19,10 @@ def cli():
 @cli.command()
 @click.option('--query', prompt='Enter search query', help='Search query for papers')
 @click.option('--max-results', default=10, help='Maximum papers to fetch')
-@click.option('--source', default=None, type=click.Choice(['openalex', 'semantic_scholar']), 
-              help='Paper source API (default: from config)')
+@click.option('--source', default=None, type=click.Choice(['openalex', 'semantic_scholar', 'both']), 
+              help='Paper source API (default: from config, use "both" for dual API)')
 def ingest(query, max_results, source):
-    """Ingest papers from OpenAlex or Semantic Scholar API."""
+    """Ingest papers from OpenAlex, Semantic Scholar, or both APIs."""
     source_name = source or Config.DEFAULT_PAPER_SOURCE
     click.echo(f"\n📚 Starting ingestion for: {query}")
     click.echo(f"   Source: {source_name}")
@@ -78,28 +78,159 @@ def build_index():
 @cli.command()
 @click.option('--query', prompt='Enter your question', help='Query to answer')
 @click.option('--top-k', default=5, help='Number of chunks to retrieve')
-def query(query, top_k):
+@click.option('--evidence', is_flag=True, default=False, 
+              help='Enable Stage 2 sentence-level evidence extraction')
+@click.option('--plan', is_flag=True, default=False,
+              help='Enable Stage 3 agentic planning with query decomposition')
+@click.option('--dynamic', is_flag=True, default=False,
+              help='Enable dynamic paper fetching (fetch fresh papers for each query)')
+def query(query, top_k, evidence, plan, dynamic):
     """Query the RAG system."""
-    click.echo(f"\n🔍 Processing query: {query}\n")
+    click.echo(f"\n🔍 Processing query: {query}")
+    if dynamic:
+        click.echo("   🌐 Dynamic retrieval: ENABLED (fetching fresh papers)")
+    if plan:
+        click.echo("   🤖 Agentic planning: ENABLED")
+        click.echo(f"   📝 Sentence-level evidence: {'ENABLED' if evidence else 'AUTO'}\n")
+    elif evidence:
+        click.echo("   📝 Sentence-level evidence: ENABLED\n")
+    else:
+        click.echo("")
+    
     try:
         mongo = get_mongo_client()
         mongo.connect()
-        retriever = Retriever()
+        
+        # Stage 3: Agentic RAG with planning (with optional dynamic retrieval)
+        if plan:
+            _run_agentic_query(query, evidence, mongo, dynamic=dynamic)
+            return
+        
+        # Stage 1/2: Standard retrieval
+        retriever = Retriever(use_evidence=evidence)
         retrieved_chunks = retriever.retrieve_chunks(query, top_k)
         if not retrieved_chunks:
             click.echo("❌ No relevant chunks found.")
             return
-        click.echo(retriever.format_retrieval_results(retrieved_chunks))
+        
+        # Format output based on evidence mode
+        if evidence:
+            # Stage 2: Show sentence-level evidence
+            from src.evidence.extractor import EvidenceExtractor
+            extractor = EvidenceExtractor()
+            click.echo(extractor.format_evidence_output(retrieved_chunks))
+        else:
+            click.echo(retriever.format_retrieval_results(retrieved_chunks))
+        
         generator = AnswerGenerator()
         answer = generator.generate_answer(query, retrieved_chunks)
         click.echo(answer)
         final_output = generator.format_final_output(answer, retrieved_chunks)
         output_file = "rag_output.txt"
-        with open(output_file, "w") as f:
+        with open(output_file, "w", encoding="utf-8") as f:
             f.write(final_output)
         click.echo(f"\n✅ Output saved to {output_file}")
     except Exception as e:
         click.echo(f"❌ Error processing query: {e}")
+
+
+def _run_agentic_query(query: str, use_evidence: bool, mongo, dynamic: bool = False):
+    """
+    Run Stage 3 agentic RAG flow.
+    
+    1. PlannerAgent decomposes query into sub-questions
+    2. Multi-retrieve chunks for each search query (or dynamic fetch)
+    3. Generate grouped answer organized by sub-questions
+    
+    Args:
+        query: User's question
+        use_evidence: Enable sentence-level evidence
+        mongo: MongoDB client
+        dynamic: If True, fetch fresh papers from APIs instead of using indexed data
+    """
+    from src.llm.factory import get_llm
+    from src.agents.planner import PlannerAgent
+    
+    click.echo("=" * 60)
+    if dynamic:
+        click.echo("🌐 STAGE 3: AGENTIC RAG + DYNAMIC RETRIEVAL")
+    else:
+        click.echo("🤖 STAGE 3: AGENTIC RAG")
+    click.echo("=" * 60)
+    
+    # Step 1: Initialize LLM and Planner
+    try:
+        llm = get_llm()
+    except Exception as e:
+        click.echo(f"❌ Error initializing LLM: {e}")
+        click.echo("   Make sure Ollama is running or GEMINI_API_KEY/GROQ_API_KEY is set.")
+        return
+    
+    planner = PlannerAgent(llm)
+    
+    # Step 2: Decompose query
+    click.echo("\n📋 Step 1: Decomposing query...")
+    try:
+        plan = planner.plan(query)
+    except Exception as e:
+        click.echo(f"❌ Error during planning: {e}")
+        return
+    
+    if not plan:
+        click.echo("❌ Failed to decompose query.")
+        return
+    
+    click.echo(f"   Main Question: {plan.get('main_question', query)}")
+    click.echo(f"   Sub-questions: {len(plan.get('sub_questions', []))}")
+    for i, sq in enumerate(plan.get('sub_questions', []), 1):
+        click.echo(f"      {i}. {sq}")
+    click.echo(f"   Search Queries: {len(plan.get('search_queries', []))}")
+    for i, sq in enumerate(plan.get('search_queries', []), 1):
+        click.echo(f"      {i}. {sq}")
+    
+    # Step 3: Retrieve chunks (dynamic or static)
+    search_queries = plan.get('search_queries', [query])
+    
+    if dynamic:
+        # Dynamic retrieval: fetch fresh papers from APIs
+        click.echo("\n🌐 Step 2: Dynamic paper retrieval...")
+        from src.retrieval.dynamic_retriever import DynamicRetriever
+        
+        dynamic_retriever = DynamicRetriever(use_evidence=True, papers_per_query=5)
+        chunks = dynamic_retriever.dynamic_retrieve(
+            search_queries=search_queries,
+            main_query=query,
+            top_k=15
+        )
+    else:
+        # Static retrieval: search pre-indexed FAISS
+        click.echo("\n🔍 Step 2: Multi-query retrieval from index...")
+        retriever = Retriever(use_evidence=True)
+        chunks = retriever.multi_retrieve(
+            search_queries,
+            top_k_per_query=5,
+            max_total=15
+        )
+    
+    if not chunks:
+        click.echo("❌ No relevant chunks found for any search query.")
+        return
+    
+    # Step 4: Generate grouped answer
+    click.echo("\n📝 Step 3: Generating grouped answer...")
+    generator = AnswerGenerator()
+    grouped_answer = generator.generate_grouped_answer(plan, chunks)
+    
+    click.echo(grouped_answer)
+    
+    # Save output
+    output_file = "rag_output.txt"
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write(f"Query: {query}\n\n")
+        if dynamic:
+            f.write("Mode: DYNAMIC RETRIEVAL (fresh papers)\n\n")
+        f.write(grouped_answer)
+    click.echo(f"\n✅ Output saved to {output_file}")
 
 @cli.command()
 def status():
@@ -130,6 +261,26 @@ def status():
         else:
             click.echo(f"   Semantic Scholar: No API key")
         click.echo(f"   Default Source: {Config.DEFAULT_PAPER_SOURCE}")
+        
+        # Show LLM configuration status (Stage 3)
+        click.echo(f"\n🤖 LLM Configuration (Stage 3)")
+        click.echo(f"   Provider: {Config.LLM_PROVIDER}")
+        if Config.LLM_PROVIDER == "local":
+            click.echo(f"   Model: {Config.OLLAMA_MODEL}")
+            click.echo(f"   Base URL: {Config.OLLAMA_BASE_URL}")
+        elif Config.LLM_PROVIDER == "gemini":
+            if Config.GEMINI_API_KEY:
+                click.echo(f"   Model: {Config.GEMINI_MODEL}")
+                click.echo(f"   API Key: ****{Config.GEMINI_API_KEY[-4:]}")
+            else:
+                click.echo(f"   ⚠️ GEMINI_API_KEY not set")
+        elif Config.LLM_PROVIDER == "groq":
+            if Config.GROQ_API_KEY:
+                click.echo(f"   Model: {Config.GROQ_MODEL}")
+                click.echo(f"   API Key: ****{Config.GROQ_API_KEY[-4:]}")
+            else:
+                click.echo(f"   ⚠️ GROQ_API_KEY not set")
+        click.echo(f"   Temperature: {Config.LLM_TEMPERATURE}")
     except Exception as e:
         click.echo(f"❌ Error checking status: {e}")
 
