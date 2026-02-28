@@ -142,12 +142,13 @@ class PaperIngestor:
             params = {
                 "search": query,
                 "per_page": min(max_results, 50),
-                # Note: sort parameter format changed - use 'publication_year:desc' or remove
+                # Only return open-access papers so we can actually download full text
+                "filter": "open_access.is_oa:true",
             }
             
             # OpenAlex uses 'mailto' for polite pool access
             params["mailto"] = "aparna6024@gmail.com"
-            print(f"✓ Using OpenAlex polite pool")
+            print(f"✓ Using OpenAlex polite pool (OA-only filter)")
             
             headers = {
                 "User-Agent": "RAG-Backend/0.1.0"
@@ -195,7 +196,7 @@ class PaperIngestor:
         params = {
             "query": query,
             "limit": min(max_results, 100),
-            "fields": "paperId,title,abstract,year,citationCount,openAccessPdf,url"
+            "fields": "paperId,title,abstract,year,citationCount,openAccessPdf,url,externalIds"
         }
         
         headers = {
@@ -286,14 +287,31 @@ class PaperIngestor:
                         full_text_url = loc["pdf_url"]
                         break
 
+            # Extract DOI (needed for Unpaywall fallback)
+            doi_raw = work.get("doi") or work.get("ids", {}).get("doi") or ""
+            doi = doi_raw.replace("https://doi.org/", "").replace("http://doi.org/", "").strip()
+
+            # Extract PubMed Central ID if available (needed for NCBI E-utilities)
+            ids = work.get("ids") or {}
+            pmcid = ""
+            pmid = ""
+            openalex_id = work.get("id", "")
+            if ids.get("pmcid"):
+                pmcid = str(ids["pmcid"]).replace("https://www.ncbi.nlm.nih.gov/pmc/articles/", "")
+            if ids.get("pmid"):
+                pmid = str(ids["pmid"]).replace("https://pubmed.ncbi.nlm.nih.gov/", "")
+
             paper = {
-                "paper_id": work.get("id", "").split("/")[-1],
+                "paper_id": openalex_id.split("/")[-1],
                 "title": work.get("title", "") or work.get("display_name", ""),
                 "abstract": abstract,
                 "year": work.get("publication_year", 0),
                 "citation_count": work.get("cited_by_count", 0),
                 "source": "openalex",
                 "is_oa": is_oa,
+                "doi": doi,
+                "pmcid": pmcid,
+                "pmid": pmid,
                 "full_text_url": full_text_url,
                 "best_oa_pdf_url": best_oa_pdf_url,
                 "oa_url": oa_url,
@@ -350,6 +368,12 @@ class PaperIngestor:
             oa_url = work.get("url")
             full_text_url = best_oa_pdf_url or oa_url
 
+            # Extract external IDs (DOI, PMCID, etc.)
+            ext_ids = work.get("externalIds") or {}
+            doi = ext_ids.get("DOI", "") or ""
+            pmcid = ext_ids.get("PMCID", "") or ""  # e.g. "PMC12345678"
+            pmid = str(ext_ids.get("PubMed", "")) if ext_ids.get("PubMed") else ""
+
             paper = {
                 "paper_id": work.get("paperId", ""),
                 "title": work.get("title", ""),
@@ -358,6 +382,9 @@ class PaperIngestor:
                 "citation_count": work.get("citationCount", 0) or 0,
                 "source": "semantic_scholar",
                 "is_oa": bool(best_oa_pdf_url),
+                "doi": doi,
+                "pmcid": pmcid,
+                "pmid": pmid,
                 "full_text_url": full_text_url,
                 "best_oa_pdf_url": best_oa_pdf_url,
                 "oa_url": oa_url,

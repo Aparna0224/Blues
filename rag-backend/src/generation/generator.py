@@ -1,6 +1,7 @@
 """Answer generation with citations."""
 
 from typing import List, Dict, Any
+import numpy as np
 
 
 class AnswerGenerator:
@@ -167,7 +168,7 @@ class AnswerGenerator:
             # Generate claims with evidence
             output += "  📌 Claims & Evidence:\n\n"
             
-            for j, chunk in enumerate(assigned_chunks[:3], 1):  # Max 3 per sub-question
+            for j, chunk in enumerate(assigned_chunks[:5], 1):  # Max 5 per sub-question
                 text = chunk.get("text", "")
                 paper_title = chunk.get("paper_title", "Unknown")
                 paper_year = chunk.get("paper_year", "N/A")
@@ -212,57 +213,86 @@ class AnswerGenerator:
         
         return output
     
+    # Minimum chunks each sub-question should receive
+    MIN_CHUNKS_PER_SUBQ = 2
+    # A chunk is assigned to a sub-question if its score is within this
+    # fraction of the best score  (e.g. 0.95 → within 5 %)
+    MULTI_ASSIGN_RATIO = 0.95
+
     def _assign_chunks_to_subquestions(
         self, 
         sub_questions: List[str], 
         chunks: List[Dict[str, Any]]
     ) -> Dict[str, List[Dict[str, Any]]]:
         """
-        Assign chunks to the most relevant sub-question.
-        
-        Uses simple keyword matching for MVP. Could be enhanced with
-        embedding similarity in future versions.
-        
+        Assign chunks to sub-questions using embedding similarity.
+
+        Strategy
+        --------
+        1.  Compute cosine similarity of every chunk against every sub-question.
+        2.  Primary assignment: each chunk goes to its best-matching sub-question.
+        3.  Multi-assignment: if a chunk's score for another sub-question is
+            within MULTI_ASSIGN_RATIO of the best score, assign it there too.
+        4.  Guarantee: if any sub-question still has < MIN_CHUNKS_PER_SUBQ,
+            fill it with the globally highest-scoring unassigned chunks for
+            that sub-question (round-robin backfill).
+
         Args:
             sub_questions: List of sub-questions
             chunks: Retrieved chunks
-            
+
         Returns:
             Dictionary mapping sub-questions to their assigned chunks
         """
+        from src.embeddings.embedder import EmbeddingGenerator
+
         assignments: Dict[str, List[Dict[str, Any]]] = {sq: [] for sq in sub_questions}
-        
-        # If chunk has matched_query, use that for assignment
-        query_to_subq = {}
-        for sq in sub_questions:
-            # Normalize for matching
-            sq_words = set(sq.lower().split())
-            query_to_subq[sq] = sq_words
-        
-        for chunk in chunks:
-            matched_query = chunk.get("matched_query", "")
-            chunk_text = chunk.get("text", "").lower()
-            
-            best_match = None
-            best_score = 0
-            
-            for sq, sq_words in query_to_subq.items():
-                # Score based on word overlap between sub-question and chunk text
-                score = len(sq_words.intersection(set(chunk_text.split())))
-                
-                # Bonus if matched_query contains sub-question keywords
-                if matched_query:
-                    matched_words = set(matched_query.lower().split())
-                    score += len(sq_words.intersection(matched_words)) * 2
-                
-                if score > best_score:
-                    best_score = score
-                    best_match = sq
-            
-            if best_match:
-                assignments[best_match].append(chunk)
-            elif sub_questions:
-                # Assign to first sub-question as fallback
-                assignments[sub_questions[0]].append(chunk)
-        
+
+        if not sub_questions or not chunks:
+            return assignments
+
+        embedder = EmbeddingGenerator()
+
+        # ── 1. Embed everything ──────────────────────────────────
+        sq_embeddings = [embedder.embed_text(sq) for sq in sub_questions]
+        chunk_embeddings = [embedder.embed_text(c.get("text", "")) for c in chunks]
+
+        # score_matrix[i][j] = similarity(chunk_i, sub_question_j)
+        score_matrix: List[List[float]] = []
+        for c_emb in chunk_embeddings:
+            row = [float(np.dot(c_emb, sq_emb)) for sq_emb in sq_embeddings]
+            score_matrix.append(row)
+
+        # ── 2. Primary + multi assignment ────────────────────────
+        for i, chunk in enumerate(chunks):
+            if not chunk.get("text"):
+                continue
+
+            scores = score_matrix[i]
+            best_score = max(scores)
+            threshold = best_score * self.MULTI_ASSIGN_RATIO
+
+            for j, sc in enumerate(scores):
+                if sc >= threshold:
+                    assignments[sub_questions[j]].append(chunk)
+
+        # ── 3. Back-fill guarantee ───────────────────────────────
+        for j, sq in enumerate(sub_questions):
+            if len(assignments[sq]) >= self.MIN_CHUNKS_PER_SUBQ:
+                continue
+
+            # Rank all chunks by their score for this sub-question (desc)
+            ranked = sorted(
+                range(len(chunks)),
+                key=lambda idx: score_matrix[idx][j],
+                reverse=True,
+            )
+            existing_texts = {id(c) for c in assignments[sq]}
+            for idx in ranked:
+                if len(assignments[sq]) >= self.MIN_CHUNKS_PER_SUBQ:
+                    break
+                if id(chunks[idx]) not in existing_texts:
+                    assignments[sq].append(chunks[idx])
+                    existing_texts.add(id(chunks[idx]))
+
         return assignments
