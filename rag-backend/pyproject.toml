@@ -25,6 +25,11 @@ dependencies = [
     # Full-text extraction
     "pymupdf>=1.23.0",            # PDF text extraction (PyMuPDF / fitz)
     "beautifulsoup4>=4.12.0",     # HTML text extraction
+    
+    # API Server (Stage 6)
+    "fastapi>=0.115.0",           # REST API framework
+    "uvicorn[standard]>=0.30.0",  # ASGI server
+    "python-multipart>=0.0.9",    # File upload support
 ]
 
 [tool.uv]
