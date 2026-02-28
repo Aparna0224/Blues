@@ -244,24 +244,22 @@ class AnswerGenerator:
         Returns:
             Dictionary mapping sub-questions to their assigned chunks
         """
-        from src.embeddings.embedder import EmbeddingGenerator
+        from src.embeddings.embedder import get_embedder
 
         assignments: Dict[str, List[Dict[str, Any]]] = {sq: [] for sq in sub_questions}
 
         if not sub_questions or not chunks:
             return assignments
 
-        embedder = EmbeddingGenerator()
+        embedder = get_embedder()
 
-        # ── 1. Embed everything ──────────────────────────────────
-        sq_embeddings = [embedder.embed_text(sq) for sq in sub_questions]
-        chunk_embeddings = [embedder.embed_text(c.get("text", "")) for c in chunks]
+        # ── 1. Embed everything (batched) ────────────────────────
+        sq_embeddings = embedder.embed_batch(sub_questions)
+        chunk_texts = [c.get("text", "") for c in chunks]
+        chunk_embeddings = embedder.embed_batch(chunk_texts)
 
-        # score_matrix[i][j] = similarity(chunk_i, sub_question_j)
-        score_matrix: List[List[float]] = []
-        for c_emb in chunk_embeddings:
-            row = [float(np.dot(c_emb, sq_emb)) for sq_emb in sq_embeddings]
-            score_matrix.append(row)
+        # score_matrix: (num_chunks, num_sub_questions) via matrix multiply
+        score_matrix = chunk_embeddings @ sq_embeddings.T
 
         # ── 2. Primary + multi assignment ────────────────────────
         for i, chunk in enumerate(chunks):

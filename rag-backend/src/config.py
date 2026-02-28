@@ -23,6 +23,9 @@ class Config:
     # Embedding Settings
     EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "allenai/scibert_scivocab_uncased")
     EMBEDDING_DIMENSION = 768
+    EMBEDDING_DEVICE = os.getenv("EMBEDDING_DEVICE", "auto")        # auto | cuda | cpu | mps
+    EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "64"))
+    EMBEDDING_CACHE_SIZE = int(os.getenv("EMBEDDING_CACHE_SIZE", "2048"))
     
     # FAISS Settings
     FAISS_INDEX_PATH = os.getenv("FAISS_INDEX_PATH", "./data/faiss_index.bin")

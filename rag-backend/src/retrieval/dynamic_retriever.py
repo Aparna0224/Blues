@@ -2,7 +2,7 @@
 
 import numpy as np
 from typing import List, Dict, Any, Optional
-from src.embeddings.embedder import EmbeddingGenerator
+from src.embeddings.embedder import get_embedder
 from src.database import get_mongo_client
 from src.ingestion.loader import PaperIngestor
 from src.ingestion.fulltext import FullTextFetcher
@@ -37,7 +37,7 @@ class DynamicRetriever:
             use_evidence: Enable sentence-level evidence extraction
             papers_per_query: Number of papers to fetch per search query
         """
-        self.embedder = EmbeddingGenerator()
+        self.embedder = get_embedder()
         self.mongo = get_mongo_client()
         self.ingestor = PaperIngestor(source="openalex")
         self.fulltext_fetcher = FullTextFetcher()
@@ -130,29 +130,30 @@ class DynamicRetriever:
         print(f"     → Already in DB: {len(existing_paper_ids)} (reusing)")
         print(f"     → New papers: {len(new_paper_ids)}")
         
-        # Step 4: Score abstract relevance against the query
+        # Step 4: Score abstract relevance against the query (BATCHED)
         print(f"   🔍 Scoring abstract relevance...")
-        query_emb = self.embedder.embed_text(main_query)
-        search_embs = [self.embedder.embed_text(sq) for sq in search_queries]
-        all_query_embs = search_embs + [query_emb]
+        all_queries = search_queries + [main_query]
+        all_query_embs = self.embedder.embed_batch(all_queries)
+        search_embs = all_query_embs[:-1]
+        query_emb = all_query_embs[-1]
+
+        # Batch-embed all abstracts at once
+        papers_with_abstract = [(pid, paper) for pid, paper in unique_papers.items()
+                                if paper.get("abstract")]
+        abstract_texts = [p.get("abstract", "") for _, p in papers_with_abstract]
         
         relevant_papers = []
-        irrelevant_count = 0
-        
-        for pid, paper in unique_papers.items():
-            abstract = paper.get("abstract", "")
-            if not abstract:
-                irrelevant_count += 1
-                continue
-            
-            abstract_emb = self.embedder.embed_text(abstract)
-            max_score = max(float(np.dot(abstract_emb, qe)) for qe in all_query_embs)
-            paper["_abstract_relevance"] = max_score
-            
-            if max_score >= self.ABSTRACT_RELEVANCE_THRESHOLD:
-                relevant_papers.append(paper)
-            else:
-                irrelevant_count += 1
+        irrelevant_count = len(unique_papers) - len(papers_with_abstract)  # no-abstract papers
+
+        if abstract_texts:
+            abstract_embs = self.embedder.embed_batch(abstract_texts)
+            for i, (pid, paper) in enumerate(papers_with_abstract):
+                max_score = float(np.max(abstract_embs[i] @ all_query_embs.T))
+                paper["_abstract_relevance"] = max_score
+                if max_score >= self.ABSTRACT_RELEVANCE_THRESHOLD:
+                    relevant_papers.append(paper)
+                else:
+                    irrelevant_count += 1
         
         relevant_papers.sort(key=lambda p: p.get("_abstract_relevance", 0), reverse=True)
         
@@ -276,28 +277,31 @@ class DynamicRetriever:
         
         print(f"   ✓ Total chunks to search: {len(all_chunks)}")
         
-        # Step 9: Embed all chunks
-        print(f"   🧠 Embedding chunks...")
-        chunk_embeddings = np.array([self.embedder.embed_text(c["text"]) for c in all_chunks])
+        # Step 9: Embed all chunks (BATCHED)
+        print(f"   🧠 Embedding {len(all_chunks)} chunks (batched)...")
+        chunk_texts = [c["text"] for c in all_chunks]
+        chunk_embeddings = self.embedder.embed_batch(chunk_texts)
         print(f"   ✓ Generated {len(chunk_embeddings)} embeddings")
         
-        # Step 10: Similarity search
+        # Step 10: Similarity search (vectorised matrix multiply)
         print(f"   🔍 Searching for relevant chunks...")
         
+        # chunk_embeddings: (N, 768), all_query_embs: (Q, 768)
+        # scores_matrix: (N, Q) — each row = chunk, each col = query
+        scores_matrix = chunk_embeddings @ all_query_embs.T   # single matmul
+        best_query_idx = np.argmax(scores_matrix, axis=1)
+        best_scores = scores_matrix[np.arange(len(all_chunks)), best_query_idx]
+
+        # Argsort descending and take top_k
+        top_indices = np.argsort(best_scores)[::-1][:top_k]
+
         chunk_scores = []
-        for i, chunk_emb in enumerate(chunk_embeddings):
-            max_score = 0
-            best_query = ""
-            for j, q_emb in enumerate(all_query_embs):
-                score = float(np.dot(chunk_emb, q_emb))
-                if score > max_score:
-                    max_score = score
-                    best_query = search_queries[j] if j < len(search_queries) else main_query
-            
-            chunk_scores.append({"index": i, "score": max_score, "matched_query": best_query})
-        
-        chunk_scores.sort(key=lambda x: x["score"], reverse=True)
-        top_chunks = chunk_scores[:top_k]
+        for idx in top_indices:
+            qi = int(best_query_idx[idx])
+            matched = search_queries[qi] if qi < len(search_queries) else main_query
+            chunk_scores.append({"index": int(idx), "score": float(best_scores[idx]), "matched_query": matched})
+
+        top_chunks = chunk_scores
         
         # Build results
         results = []

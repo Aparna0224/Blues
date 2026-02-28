@@ -10,7 +10,7 @@ This module implements Stage 2 of the RAG pipeline:
 import nltk
 from typing import List, Dict, Any, Tuple
 import numpy as np
-from src.embeddings.embedder import EmbeddingGenerator
+from src.embeddings.embedder import get_embedder
 
 
 class EvidenceExtractor:
@@ -31,7 +31,7 @@ class EvidenceExtractor:
             print("📥 Downloading NLTK punkt_tab tokenizer...")
             nltk.download('punkt_tab', quiet=True)
         
-        self.embedder = EmbeddingGenerator()
+        self.embedder = get_embedder()
     
     def split_into_sentences(self, text: str) -> List[str]:
         """

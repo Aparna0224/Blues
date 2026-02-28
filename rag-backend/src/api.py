@@ -417,10 +417,10 @@ async def upload_paper(file: UploadFile = File(...)):
     # Generate embeddings and add to FAISS
     vectors_added = 0
     try:
-        from src.embeddings.embedder import EmbeddingGenerator
+        from src.embeddings.embedder import get_embedder
         from src.vector_store import FAISSVectorStore
 
-        embedder = EmbeddingGenerator()
+        embedder = get_embedder()
         embedded_chunks = embedder.generate_chunk_embeddings(chunks)
 
         vector_store = FAISSVectorStore()
