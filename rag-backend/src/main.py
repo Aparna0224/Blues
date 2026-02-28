@@ -223,6 +223,17 @@ def _run_agentic_query(query: str, use_evidence: bool, mongo, dynamic: bool = Fa
     
     click.echo(grouped_answer)
     
+    # Step 5: Verification (Stage 4)
+    click.echo("\n🔍 Step 4: Running verification...")
+    from src.agents.verification import VerificationAgent
+    
+    verifier = VerificationAgent()
+    verification_input = verifier.build_verification_input(query, plan, chunks)
+    verification_result = verifier.verify(verification_input)
+    verification_output = verifier.format_verification_output(verification_result)
+    
+    click.echo(verification_output)
+    
     # Save output
     output_file = "rag_output.txt"
     with open(output_file, "w", encoding="utf-8") as f:
@@ -230,6 +241,10 @@ def _run_agentic_query(query: str, use_evidence: bool, mongo, dynamic: bool = Fa
         if dynamic:
             f.write("Mode: DYNAMIC RETRIEVAL (fresh papers)\n\n")
         f.write(grouped_answer)
+        f.write(verification_output)
+        f.write(f"\n\nVerification JSON:\n")
+        import json
+        f.write(json.dumps(verification_result, indent=2))
     click.echo(f"\n✅ Output saved to {output_file}")
 
 @cli.command()

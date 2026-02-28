@@ -300,6 +300,7 @@ class DynamicRetriever:
         top_chunks = chunk_scores[:top_k]
         
         # Build results
+        total_chunks_searched = len(all_chunks)
         results = []
         for item in top_chunks:
             idx = item["index"]
@@ -320,7 +321,8 @@ class DynamicRetriever:
                 "similarity_score": item["score"],
                 "section": chunk.get("section", "abstract"),
                 "matched_query": item["matched_query"],
-                "source": chunk.get("source", "unknown")
+                "source": chunk.get("source", "unknown"),
+                "_total_chunks_searched": total_chunks_searched,
             }
             results.append(result)
         

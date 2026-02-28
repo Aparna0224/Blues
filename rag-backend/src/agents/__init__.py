@@ -1,5 +1,6 @@
-"""Agent layer for Stage 3 Agentic RAG."""
+"""Agent layer for Agentic RAG."""
 
 from .planner import PlannerAgent
+from .verification import VerificationAgent
 
-__all__ = ["PlannerAgent"]
+__all__ = ["PlannerAgent", "VerificationAgent"]

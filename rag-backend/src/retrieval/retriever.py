@@ -219,8 +219,15 @@ class Retriever:
         results = list(chunks_map.values())
         results.sort(key=lambda x: x["similarity_score"], reverse=True)
         
+        # Total pool size before filtering (FAISS index size)
+        total_pool = self.vector_store.get_index_size()
+        
         # Limit to max_total
         results = results[:max_total]
+        
+        # Attach total pool size so verification can compute real density
+        for r in results:
+            r["_total_chunks_searched"] = total_pool
         
         print(f"✓ Multi-retrieve found {len(results)} unique chunks from {len(search_queries)} queries")
         
