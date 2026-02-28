@@ -34,19 +34,30 @@ class FullTextFetcher:
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
+            "Chrome/131.0.0.0 Safari/537.36"
         ),
-        "Accept": "application/pdf,text/html,application/xhtml+xml,*/*",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/pdf;q=0.8,*/*;q=0.7",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Referer": "https://scholar.google.com/",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "cross-site",
+        "Sec-Fetch-User": "?1",
     }
 
     def fetch_full_text(self, paper: Dict[str, Any]) -> Optional[str]:
         """
         Attempt to fetch full text for a paper.
         
-        Tries multiple URL sources in order of preference:
-        1. best_oa_pdf_url (direct PDF link from best_oa_location)
-        2. oa_url (open_access.oa_url — may be PDF or landing page)
-        3. full_text_url (any other URL we stored)
+        Tries multiple strategies in order:
+        1. Direct URL downloads (best_oa_pdf_url, oa_url, full_text_url)
+        2. Publisher-specific alternative URLs (MDPI HTML, EuropePMC, etc.)
+        3. Unpaywall API (DOI → working OA PDF link)
+        4. NCBI E-utilities (PMC articles → full-text XML)
         
         Args:
             paper: Paper dict with URL fields
@@ -72,11 +83,13 @@ class FullTextFetcher:
         if ft_url and ft_url not in (best_pdf, oa_url):
             urls_to_try.append(("full_text_url", ft_url))
         
-        if not urls_to_try:
-            return None
+        # Priority 4: Generate alternative URLs for known publishers
+        alt_urls = self._get_alternative_urls(paper, [u for _, u in urls_to_try])
+        urls_to_try.extend(alt_urls)
         
         title = paper.get("title", "Unknown")[:60]
         
+        # ── Try all direct URLs first ──────────────────────────
         for source_name, url in urls_to_try:
             try:
                 text = self._download_and_extract(url)
@@ -87,7 +100,225 @@ class FullTextFetcher:
                 print(f"     ⚠ {source_name} failed for '{title}': {e}")
                 continue
         
+        # ── Fallback A: Unpaywall API (needs DOI) ─────────────
+        doi = paper.get("doi") or ""
+        if doi:
+            text = self._fetch_via_unpaywall(doi, title)
+            if text:
+                return text
+        
+        # ── Fallback B: NCBI E-utilities (needs PMCID) ────────
+        pmcid = paper.get("pmcid") or ""
+        if pmcid:
+            text = self._fetch_via_pmc(pmcid, title)
+            if text:
+                return text
+        
         return None
+    
+    # ──────────────────────────────────────────────────────────────
+    # Unpaywall API  (free, just needs an email)
+    # ──────────────────────────────────────────────────────────────
+    
+    def _fetch_via_unpaywall(self, doi: str, title: str = "") -> Optional[str]:
+        """
+        Use the Unpaywall API to find a working OA PDF link for a DOI.
+        
+        Unpaywall aggregates OA locations from repositories, publishers,
+        and pre-print servers. Often returns links that work even when
+        direct publisher URLs are blocked.
+        
+        Args:
+            doi: The paper's DOI (e.g. "10.1234/example")
+            title: Paper title for logging
+            
+        Returns:
+            Extracted full text or None
+        """
+        doi_clean = doi.replace("https://doi.org/", "").replace("http://doi.org/", "").strip()
+        if not doi_clean:
+            return None
+        
+        api_url = f"https://api.unpaywall.org/v2/{doi_clean}?email=aparna6024@gmail.com"
+        
+        try:
+            resp = requests.get(api_url, timeout=15)
+            if resp.status_code != 200:
+                return None
+            
+            data = resp.json()
+            
+            # Collect OA URLs from Unpaywall response (sorted by quality)
+            oa_urls = []
+            
+            # Best OA location first
+            best_oa = data.get("best_oa_location") or {}
+            if best_oa.get("url_for_pdf"):
+                oa_urls.append(("unpaywall_best_pdf", best_oa["url_for_pdf"]))
+            if best_oa.get("url"):
+                oa_urls.append(("unpaywall_best_landing", best_oa["url"]))
+            
+            # All OA locations (repositories, pre-print servers, etc.)
+            for loc in (data.get("oa_locations") or []):
+                pdf_url = loc.get("url_for_pdf")
+                landing_url = loc.get("url")
+                if pdf_url and ("unpaywall_best_pdf", pdf_url) not in oa_urls:
+                    oa_urls.append(("unpaywall_repo_pdf", pdf_url))
+                if landing_url and ("unpaywall_best_landing", landing_url) not in oa_urls:
+                    oa_urls.append(("unpaywall_repo_landing", landing_url))
+            
+            # Try each Unpaywall URL
+            for source_name, url in oa_urls:
+                try:
+                    text = self._download_and_extract(url)
+                    if text and len(text) >= self.MIN_FULL_TEXT_LENGTH:
+                        print(f"     ✓ Full text extracted ({len(text)} chars) via {source_name}")
+                        return text[:self.MAX_FULL_TEXT_LENGTH]
+                except Exception:
+                    continue
+            
+        except Exception as e:
+            print(f"     ⚠ Unpaywall API error: {e}")
+        
+        return None
+    
+    # ──────────────────────────────────────────────────────────────
+    # NCBI E-utilities  (PMC full-text XML — no auth required)
+    # ──────────────────────────────────────────────────────────────
+    
+    def _fetch_via_pmc(self, pmcid: str, title: str = "") -> Optional[str]:
+        """
+        Fetch full-text XML from PubMed Central using NCBI E-utilities.
+        
+        The efetch API returns structured XML that is never blocked (it's
+        the official NCBI programmatic access endpoint).
+        
+        Args:
+            pmcid: PubMed Central ID (e.g. "PMC12345678")
+            title: Paper title for logging
+            
+        Returns:
+            Extracted full text or None
+        """
+        # Normalize PMCID
+        pmcid_clean = pmcid.strip()
+        if not pmcid_clean.upper().startswith("PMC"):
+            pmcid_clean = f"PMC{pmcid_clean}"
+        
+        efetch_url = (
+            "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
+            f"?db=pmc&id={pmcid_clean}&rettype=full&retmode=xml"
+            f"&tool=rag-backend&email=aparna6024@gmail.com"
+        )
+        
+        try:
+            resp = requests.get(efetch_url, timeout=30)
+            if resp.status_code != 200:
+                print(f"     ⚠ PMC efetch returned {resp.status_code} for {pmcid_clean}")
+                return None
+            
+            text = self._extract_from_pmc_xml(resp.text)
+            if text and len(text) >= self.MIN_FULL_TEXT_LENGTH:
+                print(f"     ✓ Full text extracted ({len(text)} chars) via PMC efetch ({pmcid_clean})")
+                return text[:self.MAX_FULL_TEXT_LENGTH]
+            
+        except Exception as e:
+            print(f"     ⚠ PMC efetch error for {pmcid_clean}: {e}")
+        
+        return None
+    
+    def _extract_from_pmc_xml(self, xml_text: str) -> Optional[str]:
+        """
+        Extract readable text from PMC full-text XML (JATS format).
+        
+        Targets <body> section which contains the article content,
+        extracting text from <p>, <sec>, <title> elements.
+        
+        Args:
+            xml_text: Raw XML string from efetch
+            
+        Returns:
+            Extracted text or None
+        """
+        try:
+            from bs4 import BeautifulSoup
+        except ImportError:
+            return None
+        
+        try:
+            soup = BeautifulSoup(xml_text, "html.parser")
+            
+            # Find the <body> element (contains article text in JATS XML)
+            body = soup.find("body")
+            if not body:
+                return None
+            
+            # Extract paragraphs and section titles
+            parts = []
+            for elem in body.find_all(["sec", "p", "title"]):
+                # Only grab leaf <p> and <title> elements, skip container <sec>
+                if elem.name == "sec":
+                    continue
+                text = elem.get_text(separator=" ", strip=True)
+                if text and len(text) > 15:
+                    parts.append(text)
+            
+            if not parts:
+                # Fallback: grab all text from body
+                text = body.get_text(separator="\n", strip=True)
+                return text if len(text) >= self.MIN_FULL_TEXT_LENGTH else None
+            
+            return "\n\n".join(parts)
+            
+        except Exception as e:
+            print(f"     ⚠ PMC XML parsing error: {e}")
+            return None
+    
+    def _get_alternative_urls(self, paper: Dict[str, Any], existing_urls: list) -> list:
+        """
+        Generate alternative download URLs for known publishers.
+        
+        Some publishers block direct PDF links but allow HTML access,
+        or have alternative endpoints that work better.
+        
+        Args:
+            paper: Paper dict
+            existing_urls: URLs already in the try list
+            
+        Returns:
+            List of (source_name, url) tuples
+        """
+        alternatives = []
+        all_urls = " ".join(existing_urls)
+        
+        # MDPI: /pdf URLs often blocked; try the HTML article page instead
+        if "mdpi.com" in all_urls:
+            for url in existing_urls:
+                if "mdpi.com" in url and "/pdf" in url:
+                    # Convert PDF URL to HTML article URL
+                    html_url = re.sub(r'/pdf(\?.*)?$', '', url)
+                    if html_url not in existing_urls:
+                        alternatives.append(("mdpi_html", html_url))
+        
+        # PubMed Central: try the /articles/PMCxxxxxxx/ format with trailing slash
+        if "pmc.ncbi.nlm.nih.gov" in all_urls or "ncbi.nlm.nih.gov/pmc" in all_urls:
+            for url in existing_urls:
+                if "pmc" in url.lower():
+                    # Try adding trailing slash
+                    if not url.endswith("/"):
+                        alternatives.append(("pmc_slash", url + "/"))
+                    # Try europepmc as alternative
+                    pmc_match = re.search(r'PMC(\d+)|articles/(\d+)', url)
+                    if pmc_match:
+                        pmc_id = pmc_match.group(1) or pmc_match.group(2)
+                        euro_url = f"https://europepmc.org/article/PMC/PMC{pmc_id}"
+                        if euro_url not in existing_urls:
+                            alternatives.append(("europepmc", euro_url))
+        
+        # DOI-based Unpaywall and PMC E-utilities are handled separately
+        # in fetch_full_text() as fallback strategies.
+        
+        return alternatives
     
     def _download_and_extract(self, url: str) -> Optional[str]:
         """
