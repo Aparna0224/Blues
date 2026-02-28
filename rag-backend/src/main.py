@@ -82,9 +82,13 @@ def build_index():
               help='Enable Stage 2 sentence-level evidence extraction')
 @click.option('--plan', is_flag=True, default=False,
               help='Enable Stage 3 agentic planning with query decomposition')
-def query(query, top_k, evidence, plan):
+@click.option('--dynamic', is_flag=True, default=False,
+              help='Enable dynamic paper fetching (fetch fresh papers for each query)')
+def query(query, top_k, evidence, plan, dynamic):
     """Query the RAG system."""
     click.echo(f"\n🔍 Processing query: {query}")
+    if dynamic:
+        click.echo("   🌐 Dynamic retrieval: ENABLED (fetching fresh papers)")
     if plan:
         click.echo("   🤖 Agentic planning: ENABLED")
         click.echo(f"   📝 Sentence-level evidence: {'ENABLED' if evidence else 'AUTO'}\n")
@@ -97,9 +101,9 @@ def query(query, top_k, evidence, plan):
         mongo = get_mongo_client()
         mongo.connect()
         
-        # Stage 3: Agentic RAG with planning
+        # Stage 3: Agentic RAG with planning (with optional dynamic retrieval)
         if plan:
-            _run_agentic_query(query, evidence, mongo)
+            _run_agentic_query(query, evidence, mongo, dynamic=dynamic)
             return
         
         # Stage 1/2: Standard retrieval
@@ -130,19 +134,28 @@ def query(query, top_k, evidence, plan):
         click.echo(f"❌ Error processing query: {e}")
 
 
-def _run_agentic_query(query: str, use_evidence: bool, mongo):
+def _run_agentic_query(query: str, use_evidence: bool, mongo, dynamic: bool = False):
     """
     Run Stage 3 agentic RAG flow.
     
     1. PlannerAgent decomposes query into sub-questions
-    2. Multi-retrieve chunks for each search query
+    2. Multi-retrieve chunks for each search query (or dynamic fetch)
     3. Generate grouped answer organized by sub-questions
+    
+    Args:
+        query: User's question
+        use_evidence: Enable sentence-level evidence
+        mongo: MongoDB client
+        dynamic: If True, fetch fresh papers from APIs instead of using indexed data
     """
     from src.llm.factory import get_llm
     from src.agents.planner import PlannerAgent
     
     click.echo("=" * 60)
-    click.echo("🤖 STAGE 3: AGENTIC RAG")
+    if dynamic:
+        click.echo("🌐 STAGE 3: AGENTIC RAG + DYNAMIC RETRIEVAL")
+    else:
+        click.echo("🤖 STAGE 3: AGENTIC RAG")
     click.echo("=" * 60)
     
     # Step 1: Initialize LLM and Planner
@@ -150,7 +163,7 @@ def _run_agentic_query(query: str, use_evidence: bool, mongo):
         llm = get_llm()
     except Exception as e:
         click.echo(f"❌ Error initializing LLM: {e}")
-        click.echo("   Make sure Ollama is running or GEMINI_API_KEY is set.")
+        click.echo("   Make sure Ollama is running or GEMINI_API_KEY/GROQ_API_KEY is set.")
         return
     
     planner = PlannerAgent(llm)
@@ -175,16 +188,29 @@ def _run_agentic_query(query: str, use_evidence: bool, mongo):
     for i, sq in enumerate(plan.get('search_queries', []), 1):
         click.echo(f"      {i}. {sq}")
     
-    # Step 3: Multi-retrieve
-    click.echo("\n🔍 Step 2: Multi-query retrieval...")
+    # Step 3: Retrieve chunks (dynamic or static)
     search_queries = plan.get('search_queries', [query])
     
-    retriever = Retriever(use_evidence=True)  # Always use evidence in Stage 3
-    chunks = retriever.multi_retrieve(
-        search_queries,
-        top_k_per_query=5,
-        max_total=15
-    )
+    if dynamic:
+        # Dynamic retrieval: fetch fresh papers from APIs
+        click.echo("\n🌐 Step 2: Dynamic paper retrieval...")
+        from src.retrieval.dynamic_retriever import DynamicRetriever
+        
+        dynamic_retriever = DynamicRetriever(use_evidence=True, papers_per_query=5)
+        chunks = dynamic_retriever.dynamic_retrieve(
+            search_queries=search_queries,
+            main_query=query,
+            top_k=15
+        )
+    else:
+        # Static retrieval: search pre-indexed FAISS
+        click.echo("\n🔍 Step 2: Multi-query retrieval from index...")
+        retriever = Retriever(use_evidence=True)
+        chunks = retriever.multi_retrieve(
+            search_queries,
+            top_k_per_query=5,
+            max_total=15
+        )
     
     if not chunks:
         click.echo("❌ No relevant chunks found for any search query.")
@@ -201,6 +227,8 @@ def _run_agentic_query(query: str, use_evidence: bool, mongo):
     output_file = "rag_output.txt"
     with open(output_file, "w", encoding="utf-8") as f:
         f.write(f"Query: {query}\n\n")
+        if dynamic:
+            f.write("Mode: DYNAMIC RETRIEVAL (fresh papers)\n\n")
         f.write(grouped_answer)
     click.echo(f"\n✅ Output saved to {output_file}")
 
