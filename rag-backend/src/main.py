@@ -136,11 +136,15 @@ def query(query, top_k, evidence, plan, dynamic):
 
 def _run_agentic_query(query: str, use_evidence: bool, mongo, dynamic: bool = False):
     """
-    Run Stage 3 agentic RAG flow.
+    Run Stage 3 agentic RAG flow with Stage 4 verification,
+    Stage 5 execution trace, and LLM research summary.
     
     1. PlannerAgent decomposes query into sub-questions
     2. Multi-retrieve chunks for each search query (or dynamic fetch)
     3. Generate grouped answer organized by sub-questions
+    4. VerificationAgent scores confidence
+    5. ExecutionTracer captures full trace → JSON + MongoDB
+    6. PipelineSummarizer produces LLM narrative → appended to output
     
     Args:
         query: User's question
@@ -148,8 +152,16 @@ def _run_agentic_query(query: str, use_evidence: bool, mongo, dynamic: bool = Fa
         mongo: MongoDB client
         dynamic: If True, fetch fresh papers from APIs instead of using indexed data
     """
+    import json
+    import time as _time
     from src.llm.factory import get_llm
     from src.agents.planner import PlannerAgent
+    from src.agents.verification import VerificationAgent
+    from src.trace.tracer import ExecutionTracer
+    from src.generation.summarizer import PipelineSummarizer
+    
+    mode = "dynamic" if dynamic else "cached"
+    tracer = ExecutionTracer(query=query, mode=mode)
     
     click.echo("=" * 60)
     if dynamic:
@@ -158,83 +170,186 @@ def _run_agentic_query(query: str, use_evidence: bool, mongo, dynamic: bool = Fa
         click.echo("🤖 STAGE 3: AGENTIC RAG")
     click.echo("=" * 60)
     
-    # Step 1: Initialize LLM and Planner
+    # ── Step 1: Initialize LLM and Planner ───────────────────────
     try:
         llm = get_llm()
     except Exception as e:
         click.echo(f"❌ Error initializing LLM: {e}")
         click.echo("   Make sure Ollama is running or GEMINI_API_KEY/GROQ_API_KEY is set.")
+        tracer.record_error("initialization", e)
+        tracer.mark_failed()
+        _save_trace(tracer, mongo)
         return
     
     planner = PlannerAgent(llm)
     
-    # Step 2: Decompose query
+    # ── Step 2: Decompose query ──────────────────────────────────
     click.echo("\n📋 Step 1: Decomposing query...")
+    plan = None
     try:
+        t0 = _time.perf_counter()
         plan = planner.plan(query)
+        planning_ms = round((_time.perf_counter() - t0) * 1000, 1)
     except Exception as e:
         click.echo(f"❌ Error during planning: {e}")
+        tracer.record_error("planning", e)
+        tracer.mark_failed()
+        _save_trace(tracer, mongo)
         return
     
     if not plan:
         click.echo("❌ Failed to decompose query.")
+        tracer.record_error("planning", RuntimeError("Empty plan returned"))
+        tracer.mark_failed()
+        _save_trace(tracer, mongo)
         return
     
-    click.echo(f"   Main Question: {plan.get('main_question', query)}")
-    click.echo(f"   Sub-questions: {len(plan.get('sub_questions', []))}")
-    for i, sq in enumerate(plan.get('sub_questions', []), 1):
-        click.echo(f"      {i}. {sq}")
-    click.echo(f"   Search Queries: {len(plan.get('search_queries', []))}")
-    for i, sq in enumerate(plan.get('search_queries', []), 1):
-        click.echo(f"      {i}. {sq}")
-    
-    # Step 3: Retrieve chunks (dynamic or static)
+    sub_questions = plan.get('sub_questions', [])
     search_queries = plan.get('search_queries', [query])
     
-    if dynamic:
-        # Dynamic retrieval: fetch fresh papers from APIs
-        click.echo("\n🌐 Step 2: Dynamic paper retrieval...")
-        from src.retrieval.dynamic_retriever import DynamicRetriever
-        
-        dynamic_retriever = DynamicRetriever(use_evidence=True, papers_per_query=5)
-        chunks = dynamic_retriever.dynamic_retrieve(
-            search_queries=search_queries,
-            main_query=query,
-            top_k=15
-        )
-    else:
-        # Static retrieval: search pre-indexed FAISS
-        click.echo("\n🔍 Step 2: Multi-query retrieval from index...")
-        retriever = Retriever(use_evidence=True)
-        chunks = retriever.multi_retrieve(
-            search_queries,
-            top_k_per_query=5,
-            max_total=15
-        )
+    tracer.record_planning(
+        input_question=query,
+        sub_questions=sub_questions,
+        search_queries=search_queries,
+        llm_raw_output=plan.get('_raw_output', ''),
+        latency_ms=planning_ms,
+    )
+    
+    click.echo(f"   Main Question: {plan.get('main_question', query)}")
+    click.echo(f"   Sub-questions: {len(sub_questions)}")
+    for i, sq in enumerate(sub_questions, 1):
+        click.echo(f"      {i}. {sq}")
+    click.echo(f"   Search Queries: {len(search_queries)}")
+    for i, sq in enumerate(search_queries, 1):
+        click.echo(f"      {i}. {sq}")
+    
+    # ── Step 3: Retrieve chunks ──────────────────────────────────
+    chunks = []
+    try:
+        if dynamic:
+            click.echo("\n🌐 Step 2: Dynamic paper retrieval...")
+            from src.retrieval.dynamic_retriever import DynamicRetriever
+            
+            dynamic_retriever = DynamicRetriever(use_evidence=True, papers_per_query=5)
+            chunks = dynamic_retriever.dynamic_retrieve(
+                search_queries=search_queries,
+                main_query=query,
+                top_k=15
+            )
+        else:
+            click.echo("\n🔍 Step 2: Multi-query retrieval from index...")
+            retriever = Retriever(use_evidence=True)
+            chunks = retriever.multi_retrieve(
+                search_queries,
+                top_k_per_query=5,
+                max_total=15
+            )
+    except Exception as e:
+        click.echo(f"❌ Error during retrieval: {e}")
+        tracer.record_error("retrieval", e)
+        tracer.mark_failed()
+        _save_trace(tracer, mongo)
+        return
     
     if not chunks:
         click.echo("❌ No relevant chunks found for any search query.")
+        tracer.record_error("retrieval", RuntimeError("No chunks returned"))
+        tracer.mark_failed()
+        _save_trace(tracer, mongo)
         return
     
-    # Step 4: Generate grouped answer
+    # Build per-query retrieval trace
+    per_query_trace = []
+    for sq in search_queries:
+        matching = [
+            c for c in chunks
+            if c.get("search_query") == sq or True  # all chunks available
+        ]
+        per_query_trace.append({
+            "search_query": sq,
+            "top_k": 15,
+            "retrieved_chunk_ids": [c.get("chunk_id", "") for c in matching[:5]],
+            "similarity_scores": [c.get("similarity_score", 0) for c in matching[:5]],
+        })
+    
+    tracer.record_retrieval(
+        per_query=per_query_trace,
+        total_chunks_before_merge=len(chunks),
+        unique_chunks_after_merge=len({c.get("chunk_id", i) for i, c in enumerate(chunks)}),
+    )
+    
+    # ── Step 4: Generate grouped answer ──────────────────────────
     click.echo("\n📝 Step 3: Generating grouped answer...")
-    generator = AnswerGenerator()
-    grouped_answer = generator.generate_grouped_answer(plan, chunks)
+    try:
+        generator = AnswerGenerator()
+        grouped_answer = generator.generate_grouped_answer(plan, chunks)
+    except Exception as e:
+        click.echo(f"❌ Error generating answer: {e}")
+        tracer.record_error("evidence_selection", e)
+        tracer.mark_failed()
+        _save_trace(tracer, mongo)
+        return
     
     click.echo(grouped_answer)
     
-    # Step 5: Verification (Stage 4)
-    click.echo("\n🔍 Step 4: Running verification...")
-    from src.agents.verification import VerificationAgent
+    # Record evidence selection from chunks
+    tracer.record_evidence_selection(
+        claims_used=[
+            {
+                "chunk_id": c.get("chunk_id", ""),
+                "claim": c.get("evidence_sentence", c.get("text", "")[:200]),
+                "similarity_score": c.get("similarity_score", 0),
+                "paper_id": c.get("paper_id", ""),
+                "sub_question": "",
+            }
+            for c in chunks
+        ]
+    )
     
-    verifier = VerificationAgent()
-    verification_input = verifier.build_verification_input(query, plan, chunks)
-    verification_result = verifier.verify(verification_input)
-    verification_output = verifier.format_verification_output(verification_result)
+    # ── Step 5: Verification (Stage 4) ───────────────────────────
+    click.echo("\n🔍 Step 4: Running verification...")
+    verification_result = None
+    verification_output = ""
+    try:
+        verifier = VerificationAgent()
+        verification_input = verifier.build_verification_input(query, plan, chunks)
+        verification_result = verifier.verify(verification_input)
+        verification_output = verifier.format_verification_output(verification_result)
+    except Exception as e:
+        click.echo(f"❌ Error during verification: {e}")
+        tracer.record_error("verification", e)
+    
+    if verification_result:
+        tracer.record_verification(verification_result)
+        
+        # Record filtering from verification audit
+        audit = verification_result.get("audit", {})
+        tracer.record_filtering(
+            total_claims_received=audit.get("total_claims_received", 0),
+            after_deduplication=audit.get("claims_after_dedup", 0),
+            after_relevance_filter=audit.get("claims_after_relevance_filter", 0),
+            above_similarity_threshold=audit.get("claims_above_similarity_threshold", 0),
+            claims_rejected=audit.get("claims_rejected", 0),
+        )
     
     click.echo(verification_output)
     
-    # Save output
+    # ── Step 6: LLM Research Summary (Stage 5) ───────────────────
+    click.echo("\n📝 Step 5: Generating research summary...")
+    summary_output = ""
+    try:
+        summarizer = PipelineSummarizer(llm)
+        summary_output = summarizer.summarize(
+            grouped_answer=grouped_answer,
+            verification_output=verification_output,
+            verification_result=verification_result,
+        )
+        click.echo(summary_output)
+    except Exception as e:
+        click.echo(f"⚠ Summary generation failed: {e}")
+        tracer.record_error("summary", e)
+    
+    # ── Save output (Stage 4 + summary appended) ─────────────────
     output_file = "rag_output.txt"
     with open(output_file, "w", encoding="utf-8") as f:
         f.write(f"Query: {query}\n\n")
@@ -243,9 +358,33 @@ def _run_agentic_query(query: str, use_evidence: bool, mongo, dynamic: bool = Fa
         f.write(grouped_answer)
         f.write(verification_output)
         f.write(f"\n\nVerification JSON:\n")
-        import json
-        f.write(json.dumps(verification_result, indent=2))
+        json.dump(verification_result, f, indent=2)
+        # Append LLM summary at the end
+        if summary_output:
+            f.write("\n")
+            f.write(summary_output)
     click.echo(f"\n✅ Output saved to {output_file}")
+    
+    # ── Save trace (separate file + MongoDB) ─────────────────────
+    _save_trace(tracer, mongo)
+
+
+def _save_trace(tracer, mongo) -> None:
+    """Finalize trace, save to JSON file and MongoDB."""
+    import json
+    
+    try:
+        trace_path = tracer.save_trace(directory="output")
+        click.echo(f"📋 Trace saved to {trace_path}")
+    except Exception as e:
+        click.echo(f"⚠ Failed to save trace file: {e}")
+    
+    try:
+        trace = tracer.finalize()
+        execution_id = mongo.store_trace(trace)
+        click.echo(f"📋 Trace stored in MongoDB (execution_id: {execution_id})")
+    except Exception as e:
+        click.echo(f"⚠ Failed to store trace in MongoDB: {e}")
 
 @cli.command()
 def status():
