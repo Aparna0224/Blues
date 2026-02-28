@@ -80,16 +80,29 @@ def build_index():
 @click.option('--top-k', default=5, help='Number of chunks to retrieve')
 @click.option('--evidence', is_flag=True, default=False, 
               help='Enable Stage 2 sentence-level evidence extraction')
-def query(query, top_k, evidence):
+@click.option('--plan', is_flag=True, default=False,
+              help='Enable Stage 3 agentic planning with query decomposition')
+def query(query, top_k, evidence, plan):
     """Query the RAG system."""
     click.echo(f"\n🔍 Processing query: {query}")
-    if evidence:
+    if plan:
+        click.echo("   🤖 Agentic planning: ENABLED")
+        click.echo(f"   📝 Sentence-level evidence: {'ENABLED' if evidence else 'AUTO'}\n")
+    elif evidence:
         click.echo("   📝 Sentence-level evidence: ENABLED\n")
     else:
         click.echo("")
+    
     try:
         mongo = get_mongo_client()
         mongo.connect()
+        
+        # Stage 3: Agentic RAG with planning
+        if plan:
+            _run_agentic_query(query, evidence, mongo)
+            return
+        
+        # Stage 1/2: Standard retrieval
         retriever = Retriever(use_evidence=evidence)
         retrieved_chunks = retriever.retrieve_chunks(query, top_k)
         if not retrieved_chunks:
@@ -115,6 +128,81 @@ def query(query, top_k, evidence):
         click.echo(f"\n✅ Output saved to {output_file}")
     except Exception as e:
         click.echo(f"❌ Error processing query: {e}")
+
+
+def _run_agentic_query(query: str, use_evidence: bool, mongo):
+    """
+    Run Stage 3 agentic RAG flow.
+    
+    1. PlannerAgent decomposes query into sub-questions
+    2. Multi-retrieve chunks for each search query
+    3. Generate grouped answer organized by sub-questions
+    """
+    from src.llm.factory import get_llm
+    from src.agents.planner import PlannerAgent
+    
+    click.echo("=" * 60)
+    click.echo("🤖 STAGE 3: AGENTIC RAG")
+    click.echo("=" * 60)
+    
+    # Step 1: Initialize LLM and Planner
+    try:
+        llm = get_llm()
+    except Exception as e:
+        click.echo(f"❌ Error initializing LLM: {e}")
+        click.echo("   Make sure Ollama is running or GEMINI_API_KEY is set.")
+        return
+    
+    planner = PlannerAgent(llm)
+    
+    # Step 2: Decompose query
+    click.echo("\n📋 Step 1: Decomposing query...")
+    try:
+        plan = planner.plan(query)
+    except Exception as e:
+        click.echo(f"❌ Error during planning: {e}")
+        return
+    
+    if not plan:
+        click.echo("❌ Failed to decompose query.")
+        return
+    
+    click.echo(f"   Main Question: {plan.get('main_question', query)}")
+    click.echo(f"   Sub-questions: {len(plan.get('sub_questions', []))}")
+    for i, sq in enumerate(plan.get('sub_questions', []), 1):
+        click.echo(f"      {i}. {sq}")
+    click.echo(f"   Search Queries: {len(plan.get('search_queries', []))}")
+    for i, sq in enumerate(plan.get('search_queries', []), 1):
+        click.echo(f"      {i}. {sq}")
+    
+    # Step 3: Multi-retrieve
+    click.echo("\n🔍 Step 2: Multi-query retrieval...")
+    search_queries = plan.get('search_queries', [query])
+    
+    retriever = Retriever(use_evidence=True)  # Always use evidence in Stage 3
+    chunks = retriever.multi_retrieve(
+        search_queries,
+        top_k_per_query=5,
+        max_total=15
+    )
+    
+    if not chunks:
+        click.echo("❌ No relevant chunks found for any search query.")
+        return
+    
+    # Step 4: Generate grouped answer
+    click.echo("\n📝 Step 3: Generating grouped answer...")
+    generator = AnswerGenerator()
+    grouped_answer = generator.generate_grouped_answer(plan, chunks)
+    
+    click.echo(grouped_answer)
+    
+    # Save output
+    output_file = "rag_output.txt"
+    with open(output_file, "w", encoding="utf-8") as f:
+        f.write(f"Query: {query}\n\n")
+        f.write(grouped_answer)
+    click.echo(f"\n✅ Output saved to {output_file}")
 
 @cli.command()
 def status():
@@ -145,6 +233,20 @@ def status():
         else:
             click.echo(f"   Semantic Scholar: No API key")
         click.echo(f"   Default Source: {Config.DEFAULT_PAPER_SOURCE}")
+        
+        # Show LLM configuration status (Stage 3)
+        click.echo(f"\n🤖 LLM Configuration (Stage 3)")
+        click.echo(f"   Provider: {Config.LLM_PROVIDER}")
+        if Config.LLM_PROVIDER == "local":
+            click.echo(f"   Model: {Config.OLLAMA_MODEL}")
+            click.echo(f"   Base URL: {Config.OLLAMA_BASE_URL}")
+        elif Config.LLM_PROVIDER == "gemini":
+            if Config.GEMINI_API_KEY:
+                click.echo(f"   Model: {Config.GEMINI_MODEL}")
+                click.echo(f"   API Key: ****{Config.GEMINI_API_KEY[-4:]}")
+            else:
+                click.echo(f"   ⚠️ GEMINI_API_KEY not set")
+        click.echo(f"   Temperature: {Config.LLM_TEMPERATURE}")
     except Exception as e:
         click.echo(f"❌ Error checking status: {e}")
 
