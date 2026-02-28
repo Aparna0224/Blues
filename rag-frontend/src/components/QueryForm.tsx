@@ -11,7 +11,7 @@ export default function QueryForm({ onSubmit, loading }: Props) {
   const [query, setQuery] = useState('');
   const [numDocs, setNumDocs] = useState(10);
   const [mode, setMode] = useState<'dynamic' | 'cached'>('dynamic');
-  const [includeSummary, setIncludeSummary] = useState(false);
+  const [includeSummary, setIncludeSummary] = useState(true);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   const handleSubmit = (e: React.FormEvent) => {

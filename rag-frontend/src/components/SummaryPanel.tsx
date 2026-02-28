@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Sparkles, ChevronDown, ChevronUp } from 'lucide-react';
+import { Sparkles, ChevronDown } from 'lucide-react';
 
 interface Props {
   summary: string | null;
@@ -11,27 +11,26 @@ export default function SummaryPanel({ summary }: Props) {
   if (!summary) return null;
 
   return (
-    <div className="animate-fade-in">
+    <div className="rounded-2xl border border-purple-200/80 overflow-hidden shadow-sm animate-fade-in">
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-2 w-full text-left px-4 py-3 bg-gradient-to-r
-                   from-purple-50 to-blue-50 border border-purple-200 rounded-xl
-                   hover:from-purple-100 hover:to-blue-100 transition-colors"
+        className="flex items-center gap-2.5 w-full text-left px-6 py-4
+                   bg-gradient-to-r from-purple-50 via-indigo-50 to-blue-50
+                   hover:from-purple-100 hover:via-indigo-100 hover:to-blue-100 transition-all"
       >
-        <Sparkles size={18} className="text-purple-600" />
-        <span className="font-semibold text-slate-800 flex-1">
+        <Sparkles size={16} className="text-purple-500" />
+        <span className="text-sm font-semibold text-slate-800 flex-1">
           AI Research Summary
         </span>
-        <span className="text-xs text-slate-400 mr-2">Stage 5</span>
-        {open ? (
-          <ChevronUp size={16} className="text-slate-400" />
-        ) : (
-          <ChevronDown size={16} className="text-slate-400" />
-        )}
+        <span className="text-[10px] text-slate-400 font-medium uppercase tracking-wider mr-2">Stage 5</span>
+        <ChevronDown
+          size={14}
+          className={`text-slate-400 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
+        />
       </button>
 
       {open && (
-        <div className="mt-2 bg-white border border-slate-200 rounded-xl p-5 prose text-sm text-slate-700 leading-relaxed animate-fade-in">
+        <div className="bg-white px-6 py-5 prose text-sm text-slate-700 leading-relaxed animate-fade-in">
           {summary.split('\n').map((line, i) =>
             line.trim() ? <p key={i}>{line}</p> : null
           )}

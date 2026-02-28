@@ -1,4 +1,4 @@
-import { Clock, Layers, AlertCircle } from 'lucide-react';
+import { Clock, Layers, AlertCircle, CheckCircle2, ListOrdered, FileSearch } from 'lucide-react';
 import type { QueryResponse } from '../types';
 import VerificationCard from './VerificationCard';
 import PapersTable from './PapersTable';
@@ -13,33 +13,44 @@ export default function ResultsPanel({ result }: Props) {
 
   return (
     <div className="space-y-6 animate-fade-in">
-      {/* ── Meta bar ─────────────────────────────────────────── */}
-      <div className="flex items-center gap-4 flex-wrap text-xs text-slate-500">
-        <span className="flex items-center gap-1">
-          <Clock size={13} />
-          {(r.total_time_ms / 1000).toFixed(1)}s
-        </span>
-        <span className="flex items-center gap-1">
-          <Layers size={13} />
-          {r.chunks_used} chunks from {r.papers_found.length} papers
-        </span>
-        <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 capitalize">
-          {r.mode}
-        </span>
-        <span className="font-mono text-slate-400">
-          {r.execution_id.slice(0, 8)}
-        </span>
+      {/* ── Success banner + meta ────────────────────────────── */}
+      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-lg shadow-slate-200/30 overflow-hidden">
+        <div className="h-1 bg-gradient-to-r from-emerald-500 via-blue-500 to-indigo-500" />
+        <div className="px-6 py-4 flex items-center justify-between flex-wrap gap-3">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-emerald-50 flex items-center justify-center">
+              <CheckCircle2 size={16} className="text-emerald-600" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-slate-900">Analysis Complete</p>
+              <p className="text-xs text-slate-400">{r.query}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3 text-xs text-slate-500">
+            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-50 border border-slate-200">
+              <Clock size={11} />
+              {(r.total_time_ms / 1000).toFixed(1)}s
+            </span>
+            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-50 border border-slate-200">
+              <Layers size={11} />
+              {r.chunks_used} chunks · {r.papers_found.length} papers
+            </span>
+            <span className="px-2.5 py-1 rounded-full bg-blue-50 text-blue-700 border border-blue-200 capitalize font-medium">
+              {r.mode}
+            </span>
+          </div>
+        </div>
       </div>
 
       {/* ── Warnings ─────────────────────────────────────────── */}
       {r.warnings.length > 0 && (
-        <div className="space-y-1">
+        <div className="space-y-2">
           {r.warnings.map((w, i) => (
             <div
               key={i}
-              className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-sm text-amber-800"
+              className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800"
             >
-              <AlertCircle size={14} className="shrink-0" />
+              <AlertCircle size={15} className="shrink-0 text-amber-500" />
               {w}
             </div>
           ))}
@@ -48,76 +59,83 @@ export default function ResultsPanel({ result }: Props) {
 
       {/* ── Planning (sub-questions) ─────────────────────────── */}
       {r.planning.sub_questions.length > 0 && (
-        <section>
-          <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-2">
-            Research Plan
-          </h3>
-          <div className="bg-white border border-slate-200 rounded-xl p-4">
-            <p className="text-sm font-medium text-slate-700 mb-2">
-              {r.planning.main_question}
-            </p>
-            <ol className="list-decimal pl-5 space-y-1 text-sm text-slate-600">
-              {r.planning.sub_questions.map((sq, i) => (
-                <li key={i}>{sq}</li>
-              ))}
-            </ol>
+        <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-slate-100 flex items-center gap-2">
+            <ListOrdered size={16} className="text-indigo-500" />
+            <h3 className="text-sm font-semibold text-slate-800">Research Plan</h3>
+            <span className="ml-auto text-[10px] text-slate-400 font-medium uppercase tracking-wider">Stage 1</span>
           </div>
-        </section>
+          <div className="px-6 py-4">
+            <p className="text-sm font-medium text-slate-700 mb-3 italic">
+              &ldquo;{r.planning.main_question}&rdquo;
+            </p>
+            <div className="space-y-2">
+              {r.planning.sub_questions.map((sq, i) => (
+                <div key={i} className="flex items-start gap-3">
+                  <span className="w-6 h-6 rounded-full bg-indigo-50 text-indigo-600 text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">
+                    {i + 1}
+                  </span>
+                  <p className="text-sm text-slate-600">{sq}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
       )}
 
       {/* ── Grouped Answer (Stage 3 output) ──────────────────── */}
-      <section>
-        <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-2">
-          Research Findings
-        </h3>
-        <div className="bg-white border border-slate-200 rounded-xl p-5">
+      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
+        <div className="px-6 py-4 border-b border-slate-100 flex items-center gap-2">
+          <FileSearch size={16} className="text-blue-500" />
+          <h3 className="text-sm font-semibold text-slate-800">Research Findings</h3>
+          <span className="ml-auto text-[10px] text-slate-400 font-medium uppercase tracking-wider">Stages 2–3</span>
+        </div>
+        <div className="px-6 py-5">
           <div className="prose text-sm text-slate-700">
             {r.grouped_answer.split('\n').map((line, i) => {
               if (!line.trim()) return null;
-              // Detect sub-question headers (lines starting with ##)
               if (line.startsWith('## ')) {
                 return (
-                  <h3 key={i} className="text-base font-semibold text-slate-800 mt-4 mb-2 first:mt-0">
+                  <h3 key={i} className="text-base font-semibold text-slate-800 mt-5 mb-2 first:mt-0 pb-1.5 border-b border-slate-100">
                     {line.replace(/^#+\s*/, '')}
                   </h3>
                 );
               }
               if (line.startsWith('- ') || line.startsWith('• ')) {
                 return (
-                  <p key={i} className="pl-4 border-l-2 border-blue-200 text-slate-600 mb-1">
-                    {line.replace(/^[-•]\s*/, '')}
-                  </p>
+                  <div key={i} className="flex items-start gap-2 pl-2 mb-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-400 mt-2 shrink-0" />
+                    <p className="text-slate-600 m-0">{line.replace(/^[-•]\s*/, '')}</p>
+                  </div>
                 );
               }
               return <p key={i}>{line}</p>;
             })}
           </div>
         </div>
-      </section>
+      </div>
 
       {/* ── Verification (Stage 4 — PRIMARY) ─────────────────── */}
       {r.verification && r.verification.confidence_score !== undefined && (
-        <section>
-          <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-2">
-            Verification
-          </h3>
-          <VerificationCard verification={r.verification} />
-        </section>
+        <VerificationCard verification={r.verification} />
       )}
 
       {/* ── Papers Table ─────────────────────────────────────── */}
       {r.papers_found.length > 0 && (
-        <section>
-          <PapersTable papers={r.papers_found} />
-        </section>
+        <PapersTable papers={r.papers_found} />
       )}
 
       {/* ── LLM Summary (Stage 5 — on demand) ───────────────── */}
       {r.summary && (
-        <section>
-          <SummaryPanel summary={r.summary} />
-        </section>
+        <SummaryPanel summary={r.summary} />
       )}
+
+      {/* ── Trace ID footer ──────────────────────────────────── */}
+      <div className="text-center">
+        <span className="text-[10px] text-slate-400 font-mono">
+          trace: {r.execution_id}
+        </span>
+      </div>
     </div>
   );
 }

@@ -252,18 +252,44 @@ async def run_query(req: QueryRequest):
         except Exception as e:
             warnings.append(f"Summary generation failed: {e}")
 
-    # ── Collect unique papers ────────────────────────────────────
-    seen_papers: dict = {}
+    # ── Collect unique papers (look up metadata from MongoDB) ────
+    seen_paper_ids: set = set()
     for c in chunks:
         pid = c.get("paper_id", "")
-        if pid and pid not in seen_papers:
-            seen_papers[pid] = {
-                "paper_id": pid,
-                "title": c.get("title", "Unknown"),
-                "authors": c.get("authors", "Unknown"),
-                "year": c.get("year", ""),
-                "doi": c.get("doi", ""),
-            }
+        if pid:
+            seen_paper_ids.add(pid)
+
+    papers_found: list[dict] = []
+    if seen_paper_ids:
+        try:
+            papers_col = mongo.get_papers_collection()
+            paper_docs = papers_col.find(
+                {"paper_id": {"$in": list(seen_paper_ids)}},
+                {"_id": 0, "paper_id": 1, "title": 1, "authors": 1, "year": 1, "doi": 1},
+            )
+            for doc in paper_docs:
+                authors_raw = doc.get("authors", "Unknown")
+                if isinstance(authors_raw, list):
+                    authors_str = ", ".join(str(a) for a in authors_raw)
+                else:
+                    authors_str = str(authors_raw) if authors_raw else "Unknown"
+                papers_found.append({
+                    "paper_id": doc.get("paper_id", ""),
+                    "title": doc.get("title", "Unknown"),
+                    "authors": authors_str,
+                    "year": str(doc.get("year", "")),
+                    "doi": doc.get("doi", ""),
+                })
+        except Exception:
+            # Fallback: just list paper_ids
+            for pid in seen_paper_ids:
+                papers_found.append({
+                    "paper_id": pid,
+                    "title": "Unknown",
+                    "authors": "Unknown",
+                    "year": "",
+                    "doi": "",
+                })
 
     # ── Save trace ───────────────────────────────────────────────
     execution_id = tracer.execution_id
@@ -292,7 +318,7 @@ async def run_query(req: QueryRequest):
         },
         grouped_answer=grouped_answer,
         chunks_used=len(chunks),
-        papers_found=list(seen_papers.values()),
+        papers_found=papers_found,
         verification=verification_result,
         summary=summary_text,
         total_time_ms=total_ms,

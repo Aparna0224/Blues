@@ -15,31 +15,29 @@ export interface PaperInfo {
   doi: string;
 }
 
-export interface AuditInfo {
+/** Matches the nested structure from verification.py verify() */
+export interface VerificationMetrics {
+  avg_similarity: number;
+  source_diversity: number;
+  normalized_source_diversity: number;
+  evidence_density: number;
+  conflicts_detected: string[];
+}
+
+export interface VerificationAudit {
   total_claims_received: number;
   claims_after_dedup: number;
   claims_after_relevance_filter: number;
   claims_above_similarity_threshold: number;
+  claims_used_for_scoring: number;
   claims_rejected: number;
-  dedup_removed: number;
-  relevance_removed: number;
-  similarity_gated: number;
-  calibration_applied: boolean;
-  avg_similarity: number;
-  calibration_multiplier: number;
 }
 
 export interface VerificationResult {
   confidence_score: number;
-  confidence_label: string;
-  similarity_score: number;
-  diversity_score: number;
-  evidence_density: number;
-  conflict_detected: boolean;
-  conflict_details: string[];
-  unique_papers: number;
-  total_claims: number;
-  audit: AuditInfo;
+  metrics: VerificationMetrics;
+  warnings: string[];
+  audit: VerificationAudit;
 }
 
 export interface PlanningInfo {

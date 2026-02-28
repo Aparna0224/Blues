@@ -1,6 +1,6 @@
 import { useState, useRef } from 'react';
-import { Upload, X, FileText, CheckCircle } from 'lucide-react';
-import { uploadPaper } from '../services/api';
+import { Upload, X, FileText, CheckCircle, Loader2 } from 'lucide-react';
+import { uploadPaper, extractErrorMessage } from '../services/api';
 import type { UploadResponse } from '../types';
 
 export default function FileUpload() {
@@ -22,12 +22,7 @@ export default function FileUpload() {
       const res = await uploadPaper(file);
       setResult(res);
     } catch (err: unknown) {
-      if (err && typeof err === 'object' && 'response' in err) {
-        const axErr = err as { response?: { data?: { detail?: string } } };
-        setError(axErr.response?.data?.detail ?? 'Upload failed');
-      } else {
-        setError('Upload failed');
-      }
+      setError(extractErrorMessage(err));
     } finally {
       setUploading(false);
     }
@@ -51,7 +46,7 @@ export default function FileUpload() {
   };
 
   return (
-    <div className="mb-4">
+    <div>
       {/* Drop zone */}
       <div
         onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
@@ -59,10 +54,10 @@ export default function FileUpload() {
         onDrop={onDrop}
         onClick={() => inputRef.current?.click()}
         className={`
-          border-2 border-dashed rounded-xl p-6 text-center cursor-pointer transition-all
+          relative border-2 border-dashed rounded-xl p-5 text-center cursor-pointer transition-all
           ${dragging
-            ? 'border-blue-400 bg-blue-50'
-            : 'border-slate-300 hover:border-blue-300 hover:bg-slate-50'
+            ? 'border-blue-400 bg-blue-50/50 scale-[1.01]'
+            : 'border-slate-200 hover:border-blue-300 hover:bg-blue-50/20'
           }
         `}
       >
@@ -73,38 +68,51 @@ export default function FileUpload() {
           className="hidden"
           onChange={onSelect}
         />
-        <Upload className="mx-auto mb-2 text-slate-400" size={28} />
-        <p className="text-sm font-medium text-slate-600">
-          {uploading ? 'Uploading…' : 'Drop a PDF here or click to upload'}
-        </p>
-        <p className="text-xs text-slate-400 mt-1">
-          The paper will be ingested, chunked, and indexed automatically
-        </p>
+        {uploading ? (
+          <div className="flex items-center justify-center gap-2 py-1">
+            <Loader2 size={18} className="text-blue-500 animate-spin" />
+            <span className="text-sm font-medium text-blue-600">Processing PDF…</span>
+          </div>
+        ) : (
+          <div className="flex items-center justify-center gap-3">
+            <div className="w-9 h-9 rounded-lg bg-slate-100 flex items-center justify-center">
+              <Upload size={16} className="text-slate-500" />
+            </div>
+            <div className="text-left">
+              <p className="text-sm font-medium text-slate-700">
+                Upload a paper <span className="text-slate-400 font-normal">(optional)</span>
+              </p>
+              <p className="text-[11px] text-slate-400">
+                Drop a PDF or click — it will be chunked, embedded, and indexed
+              </p>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Success */}
       {result && (
-        <div className="mt-3 flex items-start gap-3 bg-green-50 border border-green-200 rounded-lg p-3 animate-fade-in">
-          <CheckCircle size={18} className="text-green-600 mt-0.5 shrink-0" />
+        <div className="mt-3 flex items-center gap-3 bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3 animate-fade-in">
+          <CheckCircle size={16} className="text-emerald-600 shrink-0" />
           <div className="flex-1 text-sm">
-            <p className="font-medium text-green-800">Paper uploaded successfully</p>
-            <p className="text-green-700 mt-0.5">
-              <FileText size={14} className="inline mr-1" />
-              {result.title} — {result.chunks_created} chunks, {result.vectors_added} vectors
-            </p>
+            <span className="font-medium text-emerald-800">{result.title}</span>
+            <span className="text-emerald-600 ml-1">
+              — {result.chunks_created} chunks, {result.vectors_added} vectors indexed
+            </span>
           </div>
-          <button onClick={dismiss} className="text-green-400 hover:text-green-600">
-            <X size={16} />
+          <button onClick={dismiss} className="text-emerald-400 hover:text-emerald-600 p-0.5">
+            <X size={14} />
           </button>
         </div>
       )}
 
       {/* Error */}
       {error && (
-        <div className="mt-3 flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg p-3 animate-fade-in">
+        <div className="mt-3 flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg px-4 py-3 animate-fade-in">
+          <FileText size={14} className="text-red-500 shrink-0" />
           <span className="text-sm text-red-700 flex-1">{error}</span>
-          <button onClick={dismiss} className="text-red-400 hover:text-red-600">
-            <X size={16} />
+          <button onClick={dismiss} className="text-red-400 hover:text-red-600 p-0.5">
+            <X size={14} />
           </button>
         </div>
       )}
