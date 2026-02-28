@@ -175,8 +175,12 @@ class AnswerGenerator:
                 score = chunk.get("similarity_score", 0)
                 evidence_sentence = chunk.get("evidence_sentence", "")
                 evidence_score = chunk.get("evidence_score", 0)
-                
-                output += f"    [{j}] Claim:\n"
+                section = chunk.get("section", "body")
+
+                # Human-readable section label
+                section_label = self._format_section_label(section)
+
+                output += f"    [{j}] Claim ({section_label}):\n"
                 if evidence_sentence:
                     output += f"        \"{evidence_sentence}\"\n"
                     output += f"        Evidence Score: {evidence_score:.4f}\n"
@@ -196,6 +200,15 @@ class AnswerGenerator:
         output += f"{'='*80}\n\n"
         output += f"Total Evidence Sources: {len(chunks)} chunks from {len(set(c.get('paper_id') for c in chunks))} papers\n"
         output += f"Sub-questions Addressed: {len(sub_questions)}\n"
+
+        # Section breakdown
+        from collections import Counter
+        section_counts = Counter(c.get("section", "body") for c in chunks)
+        if section_counts:
+            output += f"\n📊 Evidence by Section:\n"
+            for sec, cnt in section_counts.most_common():
+                label = self._format_section_label(sec)
+                output += f"   • {label}: {cnt} chunk{'s' if cnt != 1 else ''}\n"
         
         # List all unique papers
         unique_papers = {}
@@ -218,6 +231,25 @@ class AnswerGenerator:
     # A chunk is assigned to a sub-question if its score is within this
     # fraction of the best score  (e.g. 0.95 → within 5 %)
     MULTI_ASSIGN_RATIO = 0.95
+
+    # ── Section label formatting ─────────────────────────────────
+
+    _SECTION_LABELS = {
+        "abstract": "Abstract",
+        "introduction": "Introduction",
+        "background": "Background",
+        "literature_review": "Literature Review",
+        "methodology": "Methodology",
+        "results": "Results",
+        "discussion": "Discussion",
+        "conclusion": "Conclusion",
+        "body": "Full Text",
+    }
+
+    @classmethod
+    def _format_section_label(cls, section: str) -> str:
+        """Return a human-readable label for a section key."""
+        return cls._SECTION_LABELS.get(section, section.replace("_", " ").title())
 
     def _assign_chunks_to_subquestions(
         self, 
