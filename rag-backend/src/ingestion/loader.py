@@ -195,7 +195,7 @@ class PaperIngestor:
         params = {
             "query": query,
             "limit": min(max_results, 100),
-            "fields": "paperId,title,abstract,year,citationCount"
+            "fields": "paperId,title,abstract,year,citationCount,openAccessPdf,url"
         }
         
         headers = {
@@ -262,13 +262,43 @@ class PaperIngestor:
             if not abstract:
                 return None
             
+            # Extract open-access / full-text URLs
+            open_access = work.get("open_access") or {}
+            oa_url = open_access.get("oa_url")          # best OA URL (may be PDF)
+            is_oa = open_access.get("is_oa", False)
+            
+            # best_oa_location has a direct pdf_url when available
+            best_oa = work.get("best_oa_location") or {}
+            best_oa_pdf_url = best_oa.get("pdf_url")    # direct PDF link
+            best_oa_landing = best_oa.get("landing_page_url")
+            
+            # has_content tells us if OpenAlex cached the full text
+            has_content = work.get("has_content") or {}
+            content_url = work.get("content_url")       # OpenAlex content API
+            
+            # Build a prioritized full_text_url
+            full_text_url = best_oa_pdf_url or oa_url or best_oa_landing
+
+            # Also try locations list for PDF URLs
+            if not full_text_url:
+                for loc in (work.get("locations") or []):
+                    if loc.get("pdf_url"):
+                        full_text_url = loc["pdf_url"]
+                        break
+
             paper = {
                 "paper_id": work.get("id", "").split("/")[-1],
                 "title": work.get("title", "") or work.get("display_name", ""),
                 "abstract": abstract,
                 "year": work.get("publication_year", 0),
                 "citation_count": work.get("cited_by_count", 0),
-                "source": "openalex"
+                "source": "openalex",
+                "is_oa": is_oa,
+                "full_text_url": full_text_url,
+                "best_oa_pdf_url": best_oa_pdf_url,
+                "oa_url": oa_url,
+                "content_url": content_url,
+                "has_content_pdf": has_content.get("pdf", False),
             }
             
             return paper
@@ -311,14 +341,26 @@ class PaperIngestor:
             abstract = work.get("abstract")
             if not abstract:
                 return None
+
+            # Open access PDF URL
+            oap = work.get("openAccessPdf") or {}
+            best_oa_pdf_url = oap.get("url") if oap else None
             
+            # Fallback to general paper URL
+            oa_url = work.get("url")
+            full_text_url = best_oa_pdf_url or oa_url
+
             paper = {
                 "paper_id": work.get("paperId", ""),
                 "title": work.get("title", ""),
                 "abstract": abstract,
                 "year": work.get("year", 0) or 0,
                 "citation_count": work.get("citationCount", 0) or 0,
-                "source": "semantic_scholar"
+                "source": "semantic_scholar",
+                "is_oa": bool(best_oa_pdf_url),
+                "full_text_url": full_text_url,
+                "best_oa_pdf_url": best_oa_pdf_url,
+                "oa_url": oa_url,
             }
             
             return paper

@@ -21,6 +21,10 @@ dependencies = [
     
     # Database (for later - commented for testing)
     "pymongo>=4.6.0",             # MongoDB driver
+    
+    # Full-text extraction
+    "pymupdf>=1.23.0",            # PDF text extraction (PyMuPDF / fitz)
+    "beautifulsoup4>=4.12.0",     # HTML text extraction
 ]
 
 [tool.uv]

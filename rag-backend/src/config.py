@@ -48,8 +48,8 @@ class Config:
     DEFAULT_PAPER_SOURCE = os.getenv("DEFAULT_PAPER_SOURCE", "openalex")
     
     # Chunking Settings
-    MIN_CHUNK_SENTENCES = 3
-    MAX_CHUNK_SENTENCES = 5
+    MIN_CHUNK_SENTENCES = int(os.getenv("MIN_CHUNK_SENTENCES", "8"))
+    MAX_CHUNK_SENTENCES = int(os.getenv("MAX_CHUNK_SENTENCES", "12"))
     
     # LLM Settings (Stage 3)
     # LLM_PROVIDER: "local" for Ollama, "gemini" for Google Gemini API, "groq" for Groq Cloud
