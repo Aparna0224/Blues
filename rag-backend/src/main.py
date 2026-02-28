@@ -246,6 +246,12 @@ def status():
                 click.echo(f"   API Key: ****{Config.GEMINI_API_KEY[-4:]}")
             else:
                 click.echo(f"   ⚠️ GEMINI_API_KEY not set")
+        elif Config.LLM_PROVIDER == "groq":
+            if Config.GROQ_API_KEY:
+                click.echo(f"   Model: {Config.GROQ_MODEL}")
+                click.echo(f"   API Key: ****{Config.GROQ_API_KEY[-4:]}")
+            else:
+                click.echo(f"   ⚠️ GROQ_API_KEY not set")
         click.echo(f"   Temperature: {Config.LLM_TEMPERATURE}")
     except Exception as e:
         click.echo(f"❌ Error checking status: {e}")

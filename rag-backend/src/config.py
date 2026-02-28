@@ -52,7 +52,7 @@ class Config:
     MAX_CHUNK_SENTENCES = 5
     
     # LLM Settings (Stage 3)
-    # LLM_PROVIDER: "local" for Ollama, "gemini" for Google Gemini API
+    # LLM_PROVIDER: "local" for Ollama, "gemini" for Google Gemini API, "groq" for Groq Cloud
     LLM_PROVIDER = os.getenv("LLM_PROVIDER", "local")
     
     # Ollama (Local LLM) Settings
@@ -64,6 +64,11 @@ class Config:
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
     GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
     GEMINI_TIMEOUT = int(os.getenv("GEMINI_TIMEOUT", "60"))
+    
+    # Groq Cloud API Settings (Fast inference with LPU)
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+    GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    GROQ_TIMEOUT = int(os.getenv("GROQ_TIMEOUT", "30"))
     
     # LLM Generation Settings
     LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.1"))
