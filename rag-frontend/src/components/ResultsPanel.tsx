@@ -14,29 +14,28 @@ export default function ResultsPanel({ result }: Props) {
   return (
     <div className="space-y-6 animate-fade-in">
       {/* ── Success banner + meta ────────────────────────────── */}
-      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-lg shadow-slate-200/30 overflow-hidden">
-        <div className="h-1 bg-gradient-to-r from-emerald-500 via-blue-500 to-indigo-500" />
-        <div className="px-6 py-4 flex items-center justify-between flex-wrap gap-3">
-          <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-emerald-50 flex items-center justify-center">
-              <CheckCircle2 size={16} className="text-emerald-600" />
+      <div className="bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden">
+        <div className="px-6 py-5 flex items-start justify-between flex-wrap gap-4">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-lg bg-emerald-50 flex items-center justify-center flex-shrink-0">
+              <CheckCircle2 size={20} className="text-emerald-600" />
             </div>
             <div>
-              <p className="text-sm font-semibold text-slate-900">Analysis Complete</p>
-              <p className="text-xs text-slate-400">{r.query}</p>
+              <p className="text-base font-semibold text-slate-900">Research Complete</p>
+              <p className="text-sm text-slate-600 mt-1">"{r.query}"</p>
             </div>
           </div>
-          <div className="flex items-center gap-3 text-xs text-slate-500">
-            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-50 border border-slate-200">
-              <Clock size={11} />
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-100 text-slate-700 text-xs font-medium">
+              <Clock size={13} />
               {(r.total_time_ms / 1000).toFixed(1)}s
             </span>
-            <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-slate-50 border border-slate-200">
-              <Layers size={11} />
-              {r.chunks_used} chunks · {r.papers_found.length} papers
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-100 text-slate-700 text-xs font-medium">
+              <Layers size={13} />
+              {r.chunks_used} chunks
             </span>
-            <span className="px-2.5 py-1 rounded-full bg-blue-50 text-blue-700 border border-blue-200 capitalize font-medium">
-              {r.mode}
+            <span className="px-3 py-1 rounded-full bg-blue-100 text-blue-700 text-xs font-medium capitalize">
+              {r.papers_found.length} papers
             </span>
           </div>
         </div>
@@ -48,10 +47,10 @@ export default function ResultsPanel({ result }: Props) {
           {r.warnings.map((w, i) => (
             <div
               key={i}
-              className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-800"
+              className="flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3"
             >
-              <AlertCircle size={15} className="shrink-0 text-amber-500" />
-              {w}
+              <AlertCircle size={16} className="shrink-0 text-amber-600 mt-0.5" />
+              <p className="text-sm text-amber-800">{w}</p>
             </div>
           ))}
         </div>
@@ -59,23 +58,22 @@ export default function ResultsPanel({ result }: Props) {
 
       {/* ── Planning (sub-questions) ─────────────────────────── */}
       {r.planning.sub_questions.length > 0 && (
-        <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
+        <div className="bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden">
           <div className="px-6 py-4 border-b border-slate-100 flex items-center gap-2">
-            <ListOrdered size={16} className="text-indigo-500" />
-            <h3 className="text-sm font-semibold text-slate-800">Research Plan</h3>
-            <span className="ml-auto text-[10px] text-slate-400 font-medium uppercase tracking-wider">Stage 1</span>
+            <ListOrdered size={18} className="text-blue-600" />
+            <h3 className="text-base font-semibold text-slate-900">Research Plan</h3>
           </div>
-          <div className="px-6 py-4">
-            <p className="text-sm font-medium text-slate-700 mb-3 italic">
-              &ldquo;{r.planning.main_question}&rdquo;
+          <div className="px-6 py-5">
+            <p className="text-sm text-slate-600 mb-4 italic">
+              "{r.planning.main_question}"
             </p>
-            <div className="space-y-2">
+            <div className="space-y-2.5">
               {r.planning.sub_questions.map((sq, i) => (
                 <div key={i} className="flex items-start gap-3">
-                  <span className="w-6 h-6 rounded-full bg-indigo-50 text-indigo-600 text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">
+                  <span className="w-7 h-7 rounded-full bg-blue-100 text-blue-700 text-xs font-bold flex items-center justify-center shrink-0 mt-0.5">
                     {i + 1}
                   </span>
-                  <p className="text-sm text-slate-600">{sq}</p>
+                  <p className="text-sm text-slate-700 pt-0.5">{sq}</p>
                 </div>
               ))}
             </div>
@@ -84,32 +82,31 @@ export default function ResultsPanel({ result }: Props) {
       )}
 
       {/* ── Grouped Answer (Stage 3 output) ──────────────────── */}
-      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
+      <div className="bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden">
         <div className="px-6 py-4 border-b border-slate-100 flex items-center gap-2">
-          <FileSearch size={16} className="text-blue-500" />
-          <h3 className="text-sm font-semibold text-slate-800">Research Findings</h3>
-          <span className="ml-auto text-[10px] text-slate-400 font-medium uppercase tracking-wider">Stages 2–3</span>
+          <FileSearch size={18} className="text-blue-600" />
+          <h3 className="text-base font-semibold text-slate-900">Key Findings</h3>
         </div>
         <div className="px-6 py-5">
-          <div className="prose text-sm text-slate-700">
+          <div className="prose prose-sm max-w-none">
             {r.grouped_answer.split('\n').map((line, i) => {
               if (!line.trim()) return null;
               if (line.startsWith('## ')) {
                 return (
-                  <h3 key={i} className="text-base font-semibold text-slate-800 mt-5 mb-2 first:mt-0 pb-1.5 border-b border-slate-100">
+                  <h3 key={i} className="text-sm font-semibold text-slate-800 mt-4 mb-2 first:mt-0">
                     {line.replace(/^#+\s*/, '')}
                   </h3>
                 );
               }
               if (line.startsWith('- ') || line.startsWith('• ')) {
                 return (
-                  <div key={i} className="flex items-start gap-2 pl-2 mb-1.5">
+                  <div key={i} className="flex items-start gap-2 mb-2">
                     <span className="w-1.5 h-1.5 rounded-full bg-blue-400 mt-2 shrink-0" />
-                    <p className="text-slate-600 m-0">{line.replace(/^[-•]\s*/, '')}</p>
+                    <p className="text-sm text-slate-700 m-0">{line.replace(/^[-•]\s*/, '')}</p>
                   </div>
                 );
               }
-              return <p key={i}>{line}</p>;
+              return <p key={i} className="text-sm text-slate-700">{line}</p>;
             })}
           </div>
         </div>
@@ -131,10 +128,13 @@ export default function ResultsPanel({ result }: Props) {
       )}
 
       {/* ── Trace ID footer ──────────────────────────────────── */}
-      <div className="text-center">
-        <span className="text-[10px] text-slate-400 font-mono">
-          trace: {r.execution_id}
-        </span>
+      <div className="text-center pt-4 border-t border-slate-200">
+        <a 
+          href={`/trace/${r.execution_id}`} 
+          className="text-xs text-blue-600 hover:text-blue-700 font-mono"
+        >
+          View trace: {r.execution_id}
+        </a>
       </div>
     </div>
   );

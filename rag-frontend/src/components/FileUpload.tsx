@@ -54,10 +54,10 @@ export default function FileUpload() {
         onDrop={onDrop}
         onClick={() => inputRef.current?.click()}
         className={`
-          relative border-2 border-dashed rounded-xl p-5 text-center cursor-pointer transition-all
+          relative border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-all
           ${dragging
-            ? 'border-blue-400 bg-blue-50/50 scale-[1.01]'
-            : 'border-slate-200 hover:border-blue-300 hover:bg-blue-50/20'
+            ? 'border-blue-400 bg-blue-50'
+            : 'border-slate-300 hover:border-blue-400 hover:bg-slate-50'
           }
         `}
       >
@@ -69,50 +69,50 @@ export default function FileUpload() {
           onChange={onSelect}
         />
         {uploading ? (
-          <div className="flex items-center justify-center gap-2 py-1">
-            <Loader2 size={18} className="text-blue-500 animate-spin" />
-            <span className="text-sm font-medium text-blue-600">Processing PDF…</span>
+          <div className="flex flex-col items-center justify-center gap-3 py-2">
+            <Loader2 size={28} className="text-blue-500 animate-spin" />
+            <span className="text-sm font-medium text-slate-700">Processing PDF…</span>
           </div>
         ) : (
-          <div className="flex items-center justify-center gap-3">
-            <div className="w-9 h-9 rounded-lg bg-slate-100 flex items-center justify-center">
-              <Upload size={16} className="text-slate-500" />
+          <div className="flex flex-col items-center">
+            <div className="w-12 h-12 rounded-lg bg-blue-100 flex items-center justify-center mb-3">
+              <Upload size={24} className="text-blue-600" />
             </div>
-            <div className="text-left">
-              <p className="text-sm font-medium text-slate-700">
-                Upload a paper <span className="text-slate-400 font-normal">(optional)</span>
-              </p>
-              <p className="text-[11px] text-slate-400">
-                Drop a PDF or click — it will be chunked, embedded, and indexed
-              </p>
-            </div>
+            <p className="text-base font-semibold text-slate-800 mb-1">
+              Drop your PDF here
+            </p>
+            <p className="text-sm text-slate-500">
+              or click to select a file
+            </p>
           </div>
         )}
       </div>
 
       {/* Success */}
       {result && (
-        <div className="mt-3 flex items-center gap-3 bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3 animate-fade-in">
-          <CheckCircle size={16} className="text-emerald-600 shrink-0" />
-          <div className="flex-1 text-sm">
-            <span className="font-medium text-emerald-800">{result.title}</span>
-            <span className="text-emerald-600 ml-1">
-              — {result.chunks_created} chunks, {result.vectors_added} vectors indexed
-            </span>
+        <div className="mt-4 flex items-start gap-3 bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3 animate-fade-in">
+          <CheckCircle size={18} className="text-emerald-600 shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="font-medium text-emerald-900">{result.title}</p>
+            <p className="text-sm text-emerald-700 mt-1">
+              ✓ {result.chunks_created} chunks • {result.vectors_added} vectors indexed
+            </p>
           </div>
           <button onClick={dismiss} className="text-emerald-400 hover:text-emerald-600 p-0.5">
-            <X size={14} />
+            <X size={16} />
           </button>
         </div>
       )}
 
       {/* Error */}
       {error && (
-        <div className="mt-3 flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg px-4 py-3 animate-fade-in">
-          <FileText size={14} className="text-red-500 shrink-0" />
-          <span className="text-sm text-red-700 flex-1">{error}</span>
+        <div className="mt-4 flex items-start gap-3 bg-red-50 border border-red-200 rounded-lg px-4 py-3 animate-fade-in">
+          <FileText size={16} className="text-red-500 shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="text-sm text-red-700">{error}</p>
+          </div>
           <button onClick={dismiss} className="text-red-400 hover:text-red-600 p-0.5">
-            <X size={14} />
+            <X size={16} />
           </button>
         </div>
       )}

@@ -53,22 +53,24 @@ export default function VerificationCard({ verification }: Props) {
   const conflicts = m.conflicts_detected ?? [];
 
   return (
-    <div className={`rounded-2xl border ${meta.border} bg-gradient-to-br ${meta.bg} overflow-hidden shadow-sm animate-fade-in`}>
+    <div className={`rounded-lg border ${meta.border} bg-gradient-to-br ${meta.bg} overflow-hidden shadow-sm animate-fade-in`}>
       {/* Header */}
-      <div className="px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <Icon size={20} className={meta.color} />
-          <h3 className="text-sm font-semibold text-slate-800">Verification Report</h3>
-          <span className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">Stage 4</span>
+      <div className="px-6 py-5 flex items-start justify-between">
+        <div className="flex items-start gap-3">
+          <Icon size={22} className={`${meta.color} mt-0.5`} />
+          <div>
+            <h3 className="text-base font-semibold text-slate-900">Verification Report</h3>
+            <p className="text-xs text-slate-600 mt-0.5">AI-powered fact checking & confidence assessment</p>
+          </div>
         </div>
-        <span className={`px-3 py-1 rounded-full text-sm font-bold ${meta.badge}`}>
+        <span className={`px-3 py-1.5 rounded-lg text-sm font-bold whitespace-nowrap ${meta.badge}`}>
           {pct}% {confidenceLabel}
         </span>
       </div>
 
       {/* Progress bar */}
       <div className="px-6 pb-5">
-        <div className="w-full h-2.5 bg-white/70 rounded-full overflow-hidden shadow-inner">
+        <div className="w-full h-3 bg-white/70 rounded-full overflow-hidden shadow-inner">
           <div
             className={`h-full rounded-full bg-gradient-to-r ${meta.bar} transition-all duration-1000 ease-out`}
             style={{ width: `${pct}%` }}
@@ -88,8 +90,8 @@ export default function VerificationCard({ verification }: Props) {
       {v.warnings.length > 0 && (
         <div className="mx-6 mb-4 space-y-2">
           {v.warnings.map((w, i) => (
-            <div key={i} className="flex items-center gap-2 bg-amber-100/80 rounded-lg px-3 py-2 text-sm text-amber-800">
-              <AlertTriangle size={14} className="text-amber-500 shrink-0" />
+            <div key={i} className="flex items-start gap-2 bg-amber-100 rounded-lg px-3 py-2 text-sm text-amber-800">
+              <AlertTriangle size={15} className="text-amber-600 shrink-0 mt-0.5" />
               {w}
             </div>
           ))}
@@ -98,15 +100,15 @@ export default function VerificationCard({ verification }: Props) {
 
       {/* Conflict warning */}
       {conflicts.length > 0 && (
-        <div className="mx-6 mb-4 flex items-start gap-2.5 bg-amber-100/80 rounded-xl p-4">
+        <div className="mx-6 mb-4 flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-lg p-4">
           <AlertTriangle size={16} className="text-amber-600 mt-0.5 shrink-0" />
-          <div className="text-sm text-amber-800">
-            <p className="font-semibold mb-1">Conflicting evidence detected</p>
-            <ul className="space-y-0.5 text-amber-700">
+          <div className="text-sm text-amber-900">
+            <p className="font-semibold mb-2">Conflicting Evidence</p>
+            <ul className="space-y-1 text-amber-800">
               {conflicts.map((d, i) => (
-                <li key={i} className="flex items-start gap-1.5">
-                  <span className="text-amber-400 mt-1">•</span>
-                  <span>{d}</span>
+                <li key={i} className="flex items-start gap-2">
+                  <span className="text-amber-500 mt-0.5 text-xs">◆</span>
+                  <span className="text-sm">{d}</span>
                 </li>
               ))}
             </ul>
@@ -135,10 +137,10 @@ function MetricBox({
 }) {
   const display = isInt ? String(value) : (value * 100).toFixed(1) + '%';
   return (
-    <div className="bg-white/60 backdrop-blur-sm rounded-xl p-3.5 text-center border border-white/80">
-      <p className="text-[10px] font-medium text-slate-500 uppercase tracking-wider mb-1">{label}</p>
-      <p className="text-xl font-bold text-slate-800">{display}</p>
-      {suffix && <p className="text-[10px] text-slate-400 mt-0.5">{suffix}</p>}
+    <div className="bg-white/80 rounded-lg p-3.5 text-center border border-white">
+      <p className="text-xs font-medium text-slate-600 uppercase tracking-wider mb-1.5">{label}</p>
+      <p className="text-2xl font-bold text-slate-900">{display}</p>
+      {suffix && <p className="text-xs text-slate-500 mt-1">{suffix}</p>}
     </div>
   );
 }
