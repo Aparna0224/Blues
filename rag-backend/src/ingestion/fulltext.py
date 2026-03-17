@@ -23,11 +23,14 @@ class FullTextFetcher:
     # Minimum characters for a "useful" full text (skip tiny extractions)
     MIN_FULL_TEXT_LENGTH = 500
     
-    # Maximum characters to keep (very long papers → truncate)
-    MAX_FULL_TEXT_LENGTH = 100_000
+    # Maximum characters to keep (very long papers → entire paper read)
+    MAX_FULL_TEXT_LENGTH = 500_000  # Increased to read entire papers
     
     # Request timeout
     TIMEOUT = 30
+    
+    # Throttling to avoid rate limiting
+    INTER_REQUEST_DELAY = 2  # seconds between requests
     
     # Headers to mimic a browser (some servers block plain requests)
     HEADERS = {
@@ -51,13 +54,14 @@ class FullTextFetcher:
 
     def fetch_full_text(self, paper: Dict[str, Any]) -> Optional[str]:
         """
-        Attempt to fetch full text for a paper.
+        Attempt to fetch full text for a paper. Enhanced to read entire papers.
         
-        Tries multiple strategies in order:
-        1. Direct URL downloads (best_oa_pdf_url, oa_url, full_text_url)
-        2. Publisher-specific alternative URLs (MDPI HTML, EuropePMC, etc.)
-        3. Unpaywall API (DOI → working OA PDF link)
-        4. NCBI E-utilities (PMC articles → full-text XML)
+        Tries multiple strategies in priority order:
+        1. NCBI E-utilities FIRST for PMC articles (most reliable)
+        2. Direct URL downloads (best_oa_pdf_url, oa_url, full_text_url) with throttling
+        3. Publisher-specific alternative URLs (MDPI HTML, EuropePMC)
+        4. Unpaywall API (DOI → working OA PDF link, with validation)
+        5. Fallback to abstract
         
         Args:
             paper: Paper dict with URL fields
@@ -65,52 +69,76 @@ class FullTextFetcher:
         Returns:
             Extracted full text string, or None if unavailable
         """
-        # Collect candidate URLs in priority order
+        title = paper.get("title", "Unknown")[:60]
+        
+        # ── Strategy 1: NCBI E-utilities FIRST (most reliable for PMC) ────────────
+        pmcid = paper.get("pmcid") or ""
+        if pmcid:
+            print(f"     → Trying NCBI E-utilities first for {title}...")
+            text = self._fetch_via_pmc(pmcid, title)
+            if text:
+                return text
+        
+        # ── Strategy 2: Direct URLs with throttling ────────────────────────────
         urls_to_try = []
         
-        # Priority 1: Direct PDF URL from best_oa_location
+        # Priority 2a: Direct PDF URL from best_oa_location
         best_pdf = paper.get("best_oa_pdf_url")
         if best_pdf:
             urls_to_try.append(("best_oa_pdf", best_pdf))
         
-        # Priority 2: OA URL (could be PDF or landing page)
+        # Priority 2b: OA URL (could be PDF or landing page)
         oa_url = paper.get("oa_url")
         if oa_url and oa_url != best_pdf:
             urls_to_try.append(("oa_url", oa_url))
         
-        # Priority 3: Generic full_text_url
+        # Priority 2c: Generic full_text_url
         ft_url = paper.get("full_text_url")
         if ft_url and ft_url not in (best_pdf, oa_url):
             urls_to_try.append(("full_text_url", ft_url))
         
-        # Priority 4: Generate alternative URLs for known publishers
-        alt_urls = self._get_alternative_urls(paper, [u for _, u in urls_to_try])
-        urls_to_try.extend(alt_urls)
-        
-        title = paper.get("title", "Unknown")[:60]
-        
-        # ── Try all direct URLs first ──────────────────────────
+        # Try all direct URLs with throttling
         for source_name, url in urls_to_try:
             try:
+                # Throttling to avoid rate limits (Fix #1)
+                time.sleep(self.INTER_REQUEST_DELAY)
+                
                 text = self._download_and_extract(url)
                 if text and len(text) >= self.MIN_FULL_TEXT_LENGTH:
                     print(f"     ✓ Full text extracted ({len(text)} chars) via {source_name}")
                     return text[:self.MAX_FULL_TEXT_LENGTH]
+                
+                # If PDF failed with 403, try MDPI HTML fallback (Fix #2)
+                if "mdpi.com" in url.lower() and ".pdf" in url.lower():
+                    print(f"     ⚠ PDF blocked, trying MDPI HTML version...")
+                    html_url = url.replace(".pdf", "").split("?")[0]
+                    text = self._download_and_extract(html_url)
+                    if text and len(text) >= self.MIN_FULL_TEXT_LENGTH:
+                        print(f"     ✓ Full text from MDPI HTML ({len(text)} chars)")
+                        return text[:self.MAX_FULL_TEXT_LENGTH]
+                        
             except Exception as e:
-                print(f"     ⚠ {source_name} failed for '{title}': {e}")
+                print(f"     ⚠ {source_name} failed: {str(e)[:50]}")
                 continue
         
-        # ── Fallback A: Unpaywall API (needs DOI) ─────────────
-        doi = paper.get("doi") or ""
-        if doi:
-            text = self._fetch_via_unpaywall(doi, title)
-            if text:
-                return text
+        # ── Strategy 3: Alternative URLs for known publishers ───────────────────
+        alt_urls = self._get_alternative_urls(paper, [u for _, u in urls_to_try])
+        for source_name, url in alt_urls:
+            try:
+                time.sleep(self.INTER_REQUEST_DELAY)
+                text = self._download_and_extract(url)
+                if text and len(text) >= self.MIN_FULL_TEXT_LENGTH:
+                    print(f"     ✓ Full text from {source_name} ({len(text)} chars)")
+                    return text[:self.MAX_FULL_TEXT_LENGTH]
+            except Exception as e:
+                print(f"     ⚠ Alternative URL {source_name} failed: {str(e)[:50]}")
+                continue
         
-        # ── Fallback B: NCBI E-utilities (needs PMCID) ────────
-        pmcid = paper.get("pmcid") or ""
-        if pmcid:
-            text = self._fetch_via_pmc(pmcid, title)
+        # ── Strategy 4: Unpaywall API (with DOI validation) ────────────────────
+        doi = paper.get("doi") or ""
+        if doi and self._validate_doi(doi):  # Fix #3: Validate DOI first
+            print(f"     → Trying Unpaywall API...")
+            text = self._fetch_via_unpaywall(doi, title)
             if text:
                 return text
         
@@ -120,6 +148,40 @@ class FullTextFetcher:
     # Unpaywall API  (free, just needs an email)
     # ──────────────────────────────────────────────────────────────
     
+    def _validate_doi(self, doi: str) -> bool:
+        """
+        Validate DOI format before API call (Fix #3).
+        
+        DOI format:
+        - Standard: 10.xxxx/yyyy (numeric prefix, slash, publisher/article code)
+        - May be URL: https://doi.org/10.xxxx/yyyy
+        
+        Args:
+            doi: DOI string to validate
+            
+        Returns:
+            True if valid format, False otherwise
+        """
+        if not doi:
+            return False
+        
+        # Clean URL format to just the DOI
+        doi_clean = doi.replace("https://doi.org/", "").replace("http://doi.org/", "").strip()
+        
+        # DOI format: 10.xxxx/yyyy (must start with "10.")
+        if not doi_clean.startswith("10."):
+            return False
+        
+        # Must have at least one slash
+        if "/" not in doi_clean:
+            return False
+        
+        # Basic length check
+        if len(doi_clean) < 8 or len(doi_clean) > 256:
+            return False
+        
+        return True
+
     def _fetch_via_unpaywall(self, doi: str, title: str = "") -> Optional[str]:
         """
         Use the Unpaywall API to find a working OA PDF link for a DOI.
