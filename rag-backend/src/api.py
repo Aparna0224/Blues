@@ -43,6 +43,19 @@ app.add_middleware(
 )
 
 
+# ─── Startup Event ──────────────────────────────────────────────
+@app.on_event("startup")
+async def startup_event():
+    """Initialize MongoDB connection once at startup instead of per-request."""
+    try:
+        mongo = get_mongo_client()
+        mongo.connect()
+        print("✓ MongoDB connected at startup")
+    except Exception as e:
+        print(f"⚠️  MongoDB connection deferred (will retry on first request): {e}")
+        # Don't raise - allow API to start, will try again on first request
+
+
 # ─── Request / Response models ───────────────────────────────────
 
 class QueryRequest(BaseModel):
@@ -128,13 +141,6 @@ async def run_query(req: QueryRequest):
 
     mode = req.mode
     tracer = ExecutionTracer(query=req.query, mode=mode)
-
-    # ── Connect MongoDB ──────────────────────────────────────────
-    try:
-        mongo = get_mongo_client()
-        mongo.connect()
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"MongoDB unavailable: {e}")
 
     # ── Step 1: LLM + Planner ────────────────────────────────────
     try:
@@ -365,12 +371,6 @@ async def upload_paper(file: UploadFile = File(...)):
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported.")
 
-    try:
-        mongo = get_mongo_client()
-        mongo.connect()
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"MongoDB unavailable: {e}")
-
     # Save uploaded file to temp location
     tmp_dir = tempfile.mkdtemp()
     tmp_path = os.path.join(tmp_dir, file.filename)
@@ -522,12 +522,7 @@ async def get_status():
 @app.get("/api/traces/{execution_id}")
 async def get_trace(execution_id: str):
     """Retrieve a saved execution trace."""
-    try:
-        mongo = get_mongo_client()
-        mongo.connect()
-    except Exception as e:
-        raise HTTPException(status_code=503, detail=f"MongoDB unavailable: {e}")
-
+    mongo = get_mongo_client()
     trace = mongo.get_trace(execution_id)
     if not trace:
         raise HTTPException(status_code=404, detail="Trace not found")
