@@ -283,21 +283,21 @@ class DynamicRetriever:
         chunk_embeddings = self.embedder.embed_batch(chunk_texts)
         print(f"   ✓ Generated {len(chunk_embeddings)} embeddings")
         
-        # Step 10: Similarity search (vectorised matrix multiply)
+        # Step 10: Similarity search (unified scorer)
         print(f"   🔍 Searching for relevant chunks...")
+        from src.retrieval.scorer import SimilarityScorer
         
-        # chunk_embeddings: (N, 768), all_query_embs: (Q, 768)
-        # scores_matrix: (N, Q) — each row = chunk, each col = query
-        scores_matrix = chunk_embeddings @ all_query_embs.T   # single matmul
-        best_query_idx = np.argmax(scores_matrix, axis=1)
-        best_scores = scores_matrix[np.arange(len(all_chunks)), best_query_idx]
-
-        # Argsort descending and take top_k
-        top_indices = np.argsort(best_scores)[::-1][:top_k]
+        top_indices, best_scores = SimilarityScorer.get_top_matches(
+            chunk_embeddings=chunk_embeddings,
+            query_embeddings=all_query_embs,
+            top_k=top_k
+        )
 
         chunk_scores = []
         for idx in top_indices:
-            qi = int(best_query_idx[idx])
+            # Get best query index for this chunk
+            scores_matrix = chunk_embeddings @ all_query_embs.T
+            qi = int(np.argmax(scores_matrix[idx, :]))
             matched = search_queries[qi] if qi < len(search_queries) else main_query
             chunk_scores.append({"index": int(idx), "score": float(best_scores[idx]), "matched_query": matched})
 

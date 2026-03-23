@@ -8,7 +8,7 @@ from src.chunking.processor import TextChunker
 from src.embeddings.embedder import EmbeddingGenerator, get_embedder
 from src.vector_store import FAISSVectorStore
 from src.retrieval.retriever import Retriever
-from src.generation.generator import AnswerGenerator
+
 from src.config import Config
 
 @click.group()
@@ -121,15 +121,6 @@ def query(query, top_k, evidence, plan, dynamic):
             click.echo(extractor.format_evidence_output(retrieved_chunks))
         else:
             click.echo(retriever.format_retrieval_results(retrieved_chunks))
-        
-        generator = AnswerGenerator()
-        answer = generator.generate_answer(query, retrieved_chunks)
-        click.echo(answer)
-        final_output = generator.format_final_output(answer, retrieved_chunks)
-        output_file = "rag_output.txt"
-        with open(output_file, "w", encoding="utf-8") as f:
-            f.write(final_output)
-        click.echo(f"\n✅ Output saved to {output_file}")
     except Exception as e:
         click.echo(f"❌ Error processing query: {e}")
 
@@ -278,20 +269,6 @@ def _run_agentic_query(query: str, use_evidence: bool, mongo, dynamic: bool = Fa
         unique_chunks_after_merge=len({c.get("chunk_id", i) for i, c in enumerate(chunks)}),
     )
     
-    # ── Step 4: Generate grouped answer ──────────────────────────
-    click.echo("\n📝 Step 3: Generating grouped answer...")
-    try:
-        generator = AnswerGenerator()
-        grouped_answer = generator.generate_grouped_answer(plan, chunks)
-    except Exception as e:
-        click.echo(f"❌ Error generating answer: {e}")
-        tracer.record_error("evidence_selection", e)
-        tracer.mark_failed()
-        _save_trace(tracer, mongo)
-        return
-    
-    click.echo(grouped_answer)
-    
     # Record evidence selection from chunks
     tracer.record_evidence_selection(
         claims_used=[
@@ -305,6 +282,44 @@ def _run_agentic_query(query: str, use_evidence: bool, mongo, dynamic: bool = Fa
             for c in chunks
         ]
     )
+    
+    # ──── NEW: Step 3.5: Inference & Refined Answer Generation ────
+    click.echo("\n🧠 Step 3.5: Extracting inferences & generating refined answer...")
+    inference_result = None
+    try:
+        from src.generation.integration import integrate_inference_stage
+        import time as _time_inf
+        
+        t_inf = _time_inf.perf_counter()
+        inference_result = integrate_inference_stage(
+            query=query,
+            sub_questions=sub_questions,
+            retrieved_chunks=chunks,
+            llm=llm,
+            verification_result=None  # Will be added after verification
+        )
+        inference_time_ms = round((_time_inf.perf_counter() - t_inf) * 1000, 1)
+        
+        click.echo(f"   ✓ Extracted {inference_result['inference_summary']['methodology_insights_count']} methodology insights")
+        click.echo(f"   ✓ Extracted {inference_result['inference_summary']['experimental_findings_count']} experimental findings")
+        click.echo(f"   ✓ Built {inference_result['inference_summary']['inference_chains_count']} inference chains")
+        click.echo(f"   ✓ Inference confidence: {inference_result['inferences_confidence']:.2%}")
+        click.echo(f"   ✓ Answer confidence: {inference_result['answer_confidence']:.2%}")
+        click.echo(f"\n📄 Refined Answer (5-Section Format):\n")
+        click.echo(inference_result['answer'])
+        
+        # Record inference metrics
+        tracer.record_custom_metric("inference_extraction_ms", inference_result['timing']['inference_extraction_ms'])
+        tracer.record_custom_metric("answer_generation_ms", inference_result['timing']['answer_generation_ms'])
+        tracer.record_custom_metric("answer_confidence", inference_result['answer_confidence'])
+        tracer.record_custom_metric("inferences_confidence", inference_result['inferences_confidence'])
+        
+    except Exception as e:
+        click.echo(f"⚠ Inference stage failed (continuing): {e}")
+        tracer.record_error("inference_and_generation", e)
+        # Don't fail pipeline - continue to verification
+    
+    # ──────────────────────────────────────────────────────────────
     
     # ── Step 5: Verification (Stage 4) ───────────────────────────
     click.echo("\n🔍 Step 4: Running verification...")
@@ -337,10 +352,11 @@ def _run_agentic_query(query: str, use_evidence: bool, mongo, dynamic: bool = Fa
     # ── Step 6: LLM Research Summary (Stage 5) ───────────────────
     click.echo("\n📝 Step 5: Generating research summary...")
     summary_output = ""
+    refined_answer = inference_result.get('answer', '') if inference_result else ''
     try:
         summarizer = PipelineSummarizer(llm)
         summary_output = summarizer.summarize(
-            grouped_answer=grouped_answer,
+            grouped_answer=refined_answer,
             verification_output=verification_output,
             verification_result=verification_result,
         )
@@ -355,7 +371,7 @@ def _run_agentic_query(query: str, use_evidence: bool, mongo, dynamic: bool = Fa
         f.write(f"Query: {query}\n\n")
         if dynamic:
             f.write("Mode: DYNAMIC RETRIEVAL (fresh papers)\n\n")
-        f.write(grouped_answer)
+        f.write(refined_answer)
         f.write(verification_output)
         f.write(f"\n\nVerification JSON:\n")
         json.dump(verification_result, f, indent=2)

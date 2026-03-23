@@ -38,7 +38,48 @@ export function extractErrorMessage(err: unknown): string {
 /** Run the full agentic RAG pipeline */
 export async function runQuery(params: QueryRequest): Promise<QueryResponse> {
   const { data } = await client.post<QueryResponse>('/query', params);
+  
+  // Parse 5-section answer if present
+  if (data.grouped_answer && data.answer_structure === '5-section') {
+    data.five_section_answer = parse5SectionAnswer(data.grouped_answer);
+  }
+  
   return data;
+}
+
+/** Parse 5-section answer from text */
+export function parse5SectionAnswer(text: string): {
+  executive_summary: string;
+  detailed_analysis: string;
+  methodology: string;
+  implications: string;
+  research_gaps: string;
+} {
+  const sections = {
+    executive_summary: '',
+    detailed_analysis: '',
+    methodology: '',
+    implications: '',
+    research_gaps: '',
+  };
+
+  // Split by section headers
+  const sectionPatterns = [
+    { key: 'executive_summary', regex: /(?:^|\n)##\s*1\.\s*Executive\s+Summary\n([\s\S]*?)(?=\n##\s*2\.|$)/i },
+    { key: 'detailed_analysis', regex: /(?:^|\n)##\s*2\.\s*Detailed\s+Analysis\n([\s\S]*?)(?=\n##\s*3\.|$)/i },
+    { key: 'methodology', regex: /(?:^|\n)##\s*3\.\s*Methodology\n([\s\S]*?)(?=\n##\s*4\.|$)/i },
+    { key: 'implications', regex: /(?:^|\n)##\s*4\.\s*Implications\n([\s\S]*?)(?=\n##\s*5\.|$)/i },
+    { key: 'research_gaps', regex: /(?:^|\n)##\s*5\.\s*Research\s+Gaps\n([\s\S]*?)(?=$)/i },
+  ];
+
+  for (const pattern of sectionPatterns) {
+    const match = text.match(pattern.regex);
+    if (match && match[1]) {
+      sections[pattern.key as keyof typeof sections] = match[1].trim();
+    }
+  }
+
+  return sections;
 }
 
 /** Upload a PDF paper for ingestion */

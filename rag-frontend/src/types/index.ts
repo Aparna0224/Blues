@@ -47,6 +47,23 @@ export interface PlanningInfo {
   latency_ms: number;
 }
 
+/** Inference summary from InferenceEngine */
+export interface InferenceSummary {
+  methodology_insights_count: number;
+  experimental_findings_count: number;
+  inference_chains_count: number;
+  overall_confidence: number;
+}
+
+/** 5-section answer structure */
+export interface FiveSectionAnswer {
+  executive_summary: string;
+  detailed_analysis: string;
+  methodology: string;
+  implications: string;
+  research_gaps: string;
+}
+
 export interface QueryResponse {
   execution_id: string;
   query: string;
@@ -54,6 +71,14 @@ export interface QueryResponse {
   status: string;
   planning: PlanningInfo;
   grouped_answer: string;
+  
+  // NEW: 5-section answer fields
+  answer_structure?: string; // "5-section" or undefined for backward compat
+  answer_confidence?: number; // 0-1 confidence score
+  inference_summary?: InferenceSummary; // Inference metrics
+  five_section_answer?: FiveSectionAnswer; // Parsed 5-section answer
+  inferences_confidence?: number; // Inference confidence 0-1
+  
   chunks_used: number;
   papers_found: PaperInfo[];
   verification: VerificationResult;

@@ -66,6 +66,19 @@ class QueryResponse(BaseModel):
     chunks_used: int
     papers_found: list
 
+    # ──────── NEW: Stage 3.5 — Inference & Refined Generation ────────
+    # These fields are populated by the new InferenceEngine + RefinedGenerator
+    answer_confidence: Optional[float] = None  # 0.0-1.0 confidence in answer
+    answer_structure: Optional[str] = None  # "5-section" format indicator
+    inference_summary: Optional[dict] = None  # Counts of insights/findings/chains
+    methodology_insights: Optional[list] = None  # Extracted methodology details
+    experimental_findings: Optional[list] = None  # Extracted experiment details
+    inference_chains: Optional[list] = None  # Built inference chains
+    inferences_confidence: Optional[float] = None  # Inference confidence
+    synthesis: Optional[str] = None  # Synthesized narrative from inferences
+    inference_timing_ms: Optional[float] = None  # Inference stage execution time
+    # ─────────────────────────────────────────────────────────────────
+
     # Stage 4 — Verification
     verification: dict
 
@@ -106,7 +119,6 @@ async def run_query(req: QueryRequest):
     from src.llm.factory import get_llm
     from src.agents.planner import PlannerAgent
     from src.agents.verification import VerificationAgent
-    from src.generation.generator import AnswerGenerator
     from src.retrieval.retriever import Retriever
     from src.trace.tracer import ExecutionTracer
     from src.generation.summarizer import PipelineSummarizer
@@ -196,13 +208,6 @@ async def run_query(req: QueryRequest):
         unique_chunks_after_merge=len({c.get("chunk_id", i) for i, c in enumerate(chunks)}),
     )
 
-    # ── Step 3: Grouped answer ───────────────────────────────────
-    try:
-        generator = AnswerGenerator()
-        grouped_answer = generator.generate_grouped_answer(plan, chunks)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Answer generation failed: {e}")
-
     tracer.record_evidence_selection(
         claims_used=[
             {
@@ -215,6 +220,32 @@ async def run_query(req: QueryRequest):
             for c in chunks
         ]
     )
+
+    # ──── Step 3.5: Inference & Refined Answer Generation ────
+    grouped_answer = ""
+    inference_result = None
+    try:
+        from src.generation.integration import integrate_inference_stage
+        
+        inference_result = integrate_inference_stage(
+            query=req.query,
+            sub_questions=sub_questions,
+            retrieved_chunks=chunks,
+            llm=llm,
+            verification_result=None  # Will be added after verification
+        )
+        grouped_answer = inference_result.get('answer', '')
+        
+        # Record inference metrics
+        tracer.record_custom_metric("inference_extraction_ms", inference_result['timing']['inference_extraction_ms'])
+        tracer.record_custom_metric("answer_generation_ms", inference_result['timing']['answer_generation_ms'])
+        tracer.record_custom_metric("answer_confidence", inference_result['answer_confidence'])
+        tracer.record_custom_metric("inferences_confidence", inference_result['inferences_confidence'])
+        
+    except Exception as e:
+        warnings.append(f"Inference stage failed: {e}")
+        # Fallback: use empty answer, continue to verification
+        grouped_answer = ""
 
     # ── Step 4: Verification ─────────────────────────────────────
     verification_result = {}

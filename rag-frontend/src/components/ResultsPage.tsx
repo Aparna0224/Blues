@@ -228,6 +228,111 @@ export default function ResultsPage({ result, onBack }: Props) {
           )}
         </div>
 
+        {/* 5-Section Answer Display (NEW) */}
+        {r.answer_structure === '5-section' && (
+          <div className="border-2 border-green-200 rounded-lg overflow-hidden bg-green-50">
+            <div className="px-6 py-5 bg-green-100 border-b border-green-200">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-3 h-3 rounded-full bg-green-600" />
+                  <h2 className="text-lg font-bold text-green-900">Refined 5-Section Answer</h2>
+                </div>
+                {r.answer_confidence !== undefined && (
+                  <div className="flex items-center gap-2">
+                    <div className="text-sm font-semibold text-green-800">
+                      {Math.round((r.answer_confidence || 0) * 100)}% Confidence
+                    </div>
+                    <div className="w-32 h-2 bg-white rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-green-600 transition-all"
+                        style={{ width: `${(r.answer_confidence || 0) * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="p-6 space-y-4">
+              {/* Inference Summary */}
+              {r.inference_summary && (
+                <div className="grid grid-cols-3 gap-3 p-4 bg-white rounded-lg border border-green-200">
+                  <div className="text-center">
+                    <p className="text-xs font-semibold text-slate-600 uppercase">Insights</p>
+                    <p className="text-2xl font-bold text-green-600">
+                      {r.inference_summary.methodology_insights_count}
+                    </p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-xs font-semibold text-slate-600 uppercase">Findings</p>
+                    <p className="text-2xl font-bold text-green-600">
+                      {r.inference_summary.experimental_findings_count}
+                    </p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-xs font-semibold text-slate-600 uppercase">Chains</p>
+                    <p className="text-2xl font-bold text-green-600">
+                      {r.inference_summary.inference_chains_count}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* 5 Sections */}
+              {r.five_section_answer && [
+                { key: 'executive_summary', title: '1. Executive Summary', icon: '📋' },
+                { key: 'detailed_analysis', title: '2. Detailed Analysis', icon: '🔍' },
+                { key: 'methodology', title: '3. Methodology', icon: '🔬' },
+                { key: 'implications', title: '4. Implications', icon: '💡' },
+                { key: 'research_gaps', title: '5. Research Gaps', icon: '❓' },
+              ].map((section, idx) => {
+                const sectionKey = section.key as keyof typeof r.five_section_answer;
+                const content = r.five_section_answer?.[sectionKey];
+                if (!content) return null;
+
+                return (
+                  <div key={idx} className="border border-green-200 rounded-lg overflow-hidden bg-white">
+                    <button
+                      onClick={() => toggleSection(`section_${idx}`)}
+                      className="w-full px-4 py-3 flex items-center justify-between hover:bg-green-50 transition-colors"
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="text-lg">{section.icon}</span>
+                        <h3 className="font-semibold text-slate-900">{section.title}</h3>
+                      </div>
+                      <ChevronDown
+                        size={18}
+                        className={`transition-transform ${
+                          expandedSections[`section_${idx}`] ? 'rotate-180' : ''
+                        } text-slate-600`}
+                      />
+                    </button>
+                    {expandedSections[`section_${idx}`] && (
+                      <div className="px-4 py-4 border-t border-green-200 bg-green-50 prose prose-sm max-w-none">
+                        {content.split('\n').map((line: string, i: number) => {
+                          if (!line.trim()) return null;
+                          if (line.startsWith('- ') || line.startsWith('• ')) {
+                            return (
+                              <div key={i} className="flex gap-3 mb-2">
+                                <span className="text-green-600 font-bold">•</span>
+                                <p className="text-slate-700 m-0">{line.replace(/^[-•]\s*/, '')}</p>
+                              </div>
+                            );
+                          }
+                          return (
+                            <p key={i} className="text-slate-700 mb-2 leading-relaxed">
+                              {line}
+                            </p>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         {/* Verification Section */}
         {r.verification && r.verification.confidence_score !== undefined && (
           <div className="border border-slate-200 rounded-lg overflow-hidden bg-white">
