@@ -24,81 +24,79 @@ class RefinedAnswerGenerator:
     # ────────────────────────────────────────────────────────────────────────────
     
     REFINED_ANSWER_PROMPT = """\
-You are a senior research analyst preparing a comprehensive, well-structured 
-research brief. Your task is to synthesize evidence from multiple academic papers 
-into a clear, professional answer to a research question.
+You are a senior research analyst preparing a comprehensive, evidence-based 
+research brief. Your task is to synthesize evidence from academic papers 
+into a structured answer that directly addresses the research question.
 
-───── RESEARCH CONTEXT ─────
+═══════════════════════════════════════════════════════════════════════════
+RESEARCH CONTEXT
+═══════════════════════════════════════════════════════════════════════════
+
 Main Question: {main_question}
 
-Sub-Questions (conceptual breakdown):
+Sub-Questions:
 {sub_questions_formatted}
 
-───── METHODOLOGY SUMMARY ─────
-The retrieved papers employ these approaches:
-{methodology_summary}
+═══════════════════════════════════════════════════════════════════════════
+EVIDENCE SUMMARY
+═══════════════════════════════════════════════════════════════════════════
 
-Scope: {scope}
-Key Techniques: {techniques}
-
-───── KEY FINDINGS ─────
-Evidence-backed findings:
-{findings_formatted}
-
-Quantitative Support:
-{metrics_formatted}
-
-───── YOUR TASK ─────
-
-Structure your answer as follows:
-
-1. **EXECUTIVE SUMMARY** (2-3 sentences)
-   - Direct answer to the main question
-   - Primary evidence strength (high/moderate/limited)
-
-2. **DETAILED ANALYSIS** (3-4 paragraphs)
-   For each sub-question:
-   - Findings organized by topic
-   - Supporting evidence with metrics
-   - Caveats and conditions
-   - Natural citations: "According to [Author] (Year)..." or "A [Year] study found..."
-
-3. **METHODOLOGICAL FOUNDATION**
-   - Brief explanation of techniques used
-   - Study scope and limitations
-   - How findings were validated
-
-4. **PRACTICAL IMPLICATIONS**
-   - Real-world applications
-   - When findings apply (and when they don't)
-   - Confidence level and reasoning
-
-5. **GAPS & FUTURE DIRECTIONS**
-   - Unresolved questions
-   - Limitations acknowledged
-   - Recommended next steps
-
-───── WRITING GUIDELINES ─────
-✓ Use clear, professional language (suitable for researcher audience)
-✓ Prioritize accuracy over eloquence
-✓ Include confidence indicators: "strongly supported", "suggests", "indicates"
-✓ Connect methodology to findings explicitly
-✓ Acknowledge limitations and exceptions
-✓ Use natural citations, not internal score references
-✓ Format with headers and logical flow
-✗ Do NOT use bullet points for main content (use paragraphs)
-✗ Do NOT mention "chunks", "retrieval", or pipeline internals
-✗ Do NOT invent facts beyond evidence
-✗ Do NOT use overly academic jargon
-
-───── SYNTHESIS INPUT ─────
-
+Extracted Insights:
 {inference_summary}
 
-───── END INPUT ─────
+═══════════════════════════════════════════════════════════════════════════
+ANSWER STRUCTURE REQUIREMENTS
+═══════════════════════════════════════════════════════════════════════════
 
-Now provide a comprehensive, well-structured research answer following the 
-5-section structure above. Focus on clarity, accuracy, and professional presentation.
+You MUST structure your answer with these 5 sections:
+
+1️⃣ EXECUTIVE SUMMARY (1-2 paragraphs)
+   └─ Direct, concise answer to the main question
+   └─ Key finding in one sentence
+   └─ Overall confidence/certainty level
+
+2️⃣ DETAILED ANALYSIS (3-4 paragraphs)
+   └─ Organized by sub-question or theme
+   └─ Key findings with quantitative metrics when available
+   └─ Cite studies: "According to [Authors] ([Year]), ..."
+   └─ Explain what the evidence shows and under what conditions
+
+3️⃣ METHODOLOGICAL FOUNDATION (2 paragraphs)
+   └─ What approaches were used in the studies
+   └─ How the findings were derived/validated
+   └─ Study scope and any important limitations
+
+4️⃣ PRACTICAL IMPLICATIONS (2 paragraphs)
+   └─ Real-world applications and relevance
+   └─ When the findings apply (and when they don't)
+   └─ Confidence in recommendations
+
+5️⃣ RESEARCH GAPS & FUTURE DIRECTIONS (1-2 paragraphs)
+   └─ What remains unresolved
+   └─ Acknowledged limitations
+   └─ Recommended next research steps
+
+═══════════════════════════════════════════════════════════════════════════
+CRITICAL WRITING GUIDELINES
+═══════════════════════════════════════════════════════════════════════════
+
+✓ USE SPECIFIC METRICS: "accuracy improved from 78% to 91%" not "accuracy improved"
+✓ INCLUDE CONFIDENCE: "strongly suggests", "indicates", "likely", "may indicate"
+✓ CITE EVIDENCE: Always reference the source (Author, Year, metric)
+✓ STATE CONDITIONS: "This applies to X but not Y because..."
+✓ ACKNOWLEDGE UNCERTAINTY: Be honest about limitations
+✓ USE CLEAR LANGUAGE: Professional but accessible
+
+✗ DON'T USE VAGUE LANGUAGE: "studies show" without details
+✗ DON'T INVENT FACTS: Only use provided evidence
+✗ DON'T SKIP SECTIONS: All 5 sections MUST be included
+✗ DON'T USE BULLET POINTS: Write in flowing paragraphs
+✗ DON'T MENTION SYSTEM INTERNALS: No "chunks", "retrieval", "pipeline"
+
+═══════════════════════════════════════════════════════════════════════════
+
+Now generate the comprehensive 5-section answer addressing all requirements.
+Use the evidence provided to create a detailed, well-structured response.
 """
     
     # ────────────────────────────────────────────────────────────────────────────

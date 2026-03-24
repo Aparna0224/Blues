@@ -55,6 +55,36 @@ export interface InferenceSummary {
   overall_confidence: number;
 }
 
+/** Methodology insight extracted from papers */
+export interface MethodologyInsight {
+  technique: string;
+  assumptions: string[];
+  constraints: string[];
+  scope: string;
+  validation_method?: string;
+}
+
+/** Experimental finding extracted from papers */
+export interface ExperimentalFinding {
+  finding: string;
+  metrics: Record<string, number>;
+  conditions: string[];
+  generalizability: string;
+  exceptions?: string;
+}
+
+/** Inference chain with evidence trail */
+export interface InferenceChain {
+  claim: string;
+  confidence: number;
+  evidence_sources: string[];
+  inference_path: string[];
+  methodology_support?: string;
+  experimental_support?: string;
+  limitation?: string;
+  implication?: string;
+}
+
 /** 5-section answer structure */
 export interface FiveSectionAnswer {
   executive_summary: string;
@@ -72,12 +102,17 @@ export interface QueryResponse {
   planning: PlanningInfo;
   grouped_answer: string;
   
-  // NEW: 5-section answer fields
+  // NEW: Detailed inference/extraction results
   answer_structure?: string; // "5-section" or undefined for backward compat
   answer_confidence?: number; // 0-1 confidence score
   inference_summary?: InferenceSummary; // Inference metrics
-  five_section_answer?: FiveSectionAnswer; // Parsed 5-section answer
+  methodology_insights?: MethodologyInsight[]; // Extracted methodologies
+  experimental_findings?: ExperimentalFinding[]; // Extracted findings
+  inference_chains?: InferenceChain[]; // Built inference chains
+  synthesis?: string; // Synthesized narrative
   inferences_confidence?: number; // Inference confidence 0-1
+  inference_timing_ms?: number; // Timing
+  five_section_answer?: FiveSectionAnswer; // Parsed 5-section answer
   
   chunks_used: number;
   papers_found: PaperInfo[];

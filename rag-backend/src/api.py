@@ -141,6 +141,9 @@ async def run_query(req: QueryRequest):
 
     mode = req.mode
     tracer = ExecutionTracer(query=req.query, mode=mode)
+    
+    # ── Get MongoDB client (already connected at startup) ────────
+    mongo = get_mongo_client()
 
     # ── Step 1: LLM + Planner ────────────────────────────────────
     try:
@@ -243,15 +246,36 @@ async def run_query(req: QueryRequest):
         grouped_answer = inference_result.get('answer', '')
         
         # Record inference metrics
-        tracer.record_custom_metric("inference_extraction_ms", inference_result['timing']['inference_extraction_ms'])
-        tracer.record_custom_metric("answer_generation_ms", inference_result['timing']['answer_generation_ms'])
-        tracer.record_custom_metric("answer_confidence", inference_result['answer_confidence'])
-        tracer.record_custom_metric("inferences_confidence", inference_result['inferences_confidence'])
+        if inference_result.get('timing'):
+            tracer.record_custom_metric("inference_extraction_ms", inference_result['timing'].get('inference_extraction_ms', 0))
+            tracer.record_custom_metric("answer_generation_ms", inference_result['timing'].get('answer_generation_ms', 0))
+        tracer.record_custom_metric("answer_confidence", inference_result.get('answer_confidence', 0))
+        tracer.record_custom_metric("inferences_confidence", inference_result.get('inferences_confidence', 0))
         
     except Exception as e:
-        warnings.append(f"Inference stage failed: {e}")
-        # Fallback: use empty answer, continue to verification
-        grouped_answer = ""
+        import traceback
+        error_msg = f"Inference stage failed: {str(e)}"
+        print(f"❌ {error_msg}")
+        print(traceback.format_exc())
+        warnings.append(error_msg)
+        # Create minimal inference result so UI doesn't break
+        inference_result = {
+            "answer": "",
+            "answer_structure": "5-section",
+            "answer_confidence": 0.0,
+            "methodology_insights": [],
+            "experimental_findings": [],
+            "inference_chains": [],
+            "inferences_confidence": 0.0,
+            "synthesis": "",
+            "inference_summary": {
+                "methodology_insights_count": 0,
+                "experimental_findings_count": 0,
+                "inference_chains_count": 0,
+                "overall_confidence": 0.0,
+            },
+            "timing": {"inference_extraction_ms": 0, "answer_generation_ms": 0},
+        }
 
     # ── Step 4: Verification ─────────────────────────────────────
     verification_result = {}
@@ -342,6 +366,9 @@ async def run_query(req: QueryRequest):
 
     total_ms = round((_time.perf_counter() - t_start) * 1000, 1)
 
+    # Prepare inference result fields (defaults if not available)
+    inference_data = inference_result or {}
+    
     return QueryResponse(
         execution_id=execution_id,
         query=req.query,
@@ -356,6 +383,17 @@ async def run_query(req: QueryRequest):
         grouped_answer=grouped_answer,
         chunks_used=len(chunks),
         papers_found=papers_found,
+        # ─── NEW: Include inference/generation results ───
+        answer_confidence=inference_data.get("answer_confidence"),
+        answer_structure=inference_data.get("answer_structure"),  # "5-section"
+        inference_summary=inference_data.get("inference_summary"),
+        methodology_insights=inference_data.get("methodology_insights"),
+        experimental_findings=inference_data.get("experimental_findings"),
+        inference_chains=inference_data.get("inference_chains"),
+        inferences_confidence=inference_data.get("inferences_confidence"),
+        synthesis=inference_data.get("synthesis"),
+        inference_timing_ms=inference_data.get("total_inference_ms"),
+        # ──────────────────────────────────────────────
         verification=verification_result,
         summary=summary_text,
         total_time_ms=total_ms,
