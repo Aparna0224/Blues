@@ -100,6 +100,15 @@ class ExecutionTracer:
         self._timings[f"{stage_name}_ms"] = elapsed_ms
         return elapsed_ms
 
+    def record_custom_metric(self, metric_name: str, value: Any) -> None:
+        """Record a custom metric in the trace.
+        
+        Args:
+            metric_name: Name of the metric (e.g., "inference_extraction_ms")
+            value: Numeric or string value of the metric
+        """
+        self._timings[metric_name] = value
+
     # ─────────────────────────────────────────────────────────────
     # Config snapshot
     # ─────────────────────────────────────────────────────────────
