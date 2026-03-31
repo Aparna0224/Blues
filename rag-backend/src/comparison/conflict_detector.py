@@ -23,7 +23,7 @@ class ConflictDetector:
 
     METHOD_TERMS: Set[str] = {"method", "methodology", "approach", "pipeline", "framework"}
     RESULT_TERMS: Set[str] = {"result", "results", "experiment", "evaluation", "performance"}
-    TOPIC_SIMILARITY_THRESHOLD = 0.70
+    TOPIC_SIMILARITY_THRESHOLD = 0.60
     CLAIM_SIMILARITY_THRESHOLD = 0.40
 
     @classmethod
