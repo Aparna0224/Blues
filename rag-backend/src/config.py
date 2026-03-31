@@ -55,6 +55,11 @@ class Config:
     BM25_WEIGHT = float(os.getenv("BM25_WEIGHT", "0.4"))
     SEMANTIC_WEIGHT = float(os.getenv("SEMANTIC_WEIGHT", "0.6"))
     BM25_TOP_K = int(os.getenv("BM25_TOP_K", "20"))
+    SOFT_FILTER_KEYWORD_PENALTY = float(os.getenv("SOFT_FILTER_KEYWORD_PENALTY", "0.85"))
+    SOFT_FILTER_DOMAIN_PENALTY = float(os.getenv("SOFT_FILTER_DOMAIN_PENALTY", "0.85"))
+    SOFT_FILTER_LOW_SEMANTIC_PENALTY = float(os.getenv("SOFT_FILTER_LOW_SEMANTIC_PENALTY", "0.7"))
+    SOFT_FILTER_LOW_SEMANTIC_THRESHOLD = float(os.getenv("SOFT_FILTER_LOW_SEMANTIC_THRESHOLD", "0.35"))
+    MIN_SCORE_THRESHOLD = float(os.getenv("MIN_SCORE_THRESHOLD", "0.005"))
     
     # OpenAlex API Settings
     # Rate: 100k credits/day with key, 100 credits/day without

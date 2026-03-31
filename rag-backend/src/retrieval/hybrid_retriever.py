@@ -88,6 +88,9 @@ class HybridRetriever:
                 if Retriever._passes_metadata_filters(metadata_filters, c)
             ]
 
+        # Soft precision filtering (post-fusion)
+        fused = self._apply_soft_filtering(query, fused)
+
         # Limit to top_k
         fused = fused[:top_k]
 
@@ -183,6 +186,9 @@ class HybridRetriever:
                 if Retriever._passes_metadata_filters(metadata_filters, c)
             ]
 
+        # Soft precision filtering (post-fusion and post-dedup)
+        results = self._apply_soft_filtering(search_queries[0], results)
+
         # Limit to max_total
         results = results[:max_total]
 
@@ -263,6 +269,96 @@ class HybridRetriever:
         # Sort descending by RRF score
         fused.sort(key=lambda x: x["rrf_score"], reverse=True)
         return fused
+
+    def _apply_soft_filtering(
+        self,
+        query: str,
+        chunks: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Apply soft, penalty-based filtering after fusion.
+
+        This preserves recall by avoiding hard pre-fusion drops and
+        improves precision by penalizing weak lexical/domain/semantic matches.
+        """
+        if not chunks:
+            return []
+
+        adjusted: List[Dict[str, Any]] = []
+        min_score = float(Config.MIN_SCORE_THRESHOLD)
+
+        for chunk in chunks:
+            base_score = float(chunk.get("rrf_score", 0.0) or 0.0)
+            score = base_score
+
+            text = chunk.get("text", "")
+            semantic_score = float(chunk.get("similarity_score", 0.0) or 0.0)
+
+            keyword_overlap = self._keyword_overlap(query, text)
+            if keyword_overlap < int(Config.KEYWORD_MIN_OVERLAP):
+                score *= float(Config.SOFT_FILTER_KEYWORD_PENALTY)
+
+            if not self._passes_domain_gate(query, text):
+                score *= float(Config.SOFT_FILTER_DOMAIN_PENALTY)
+
+            if semantic_score < float(Config.SOFT_FILTER_LOW_SEMANTIC_THRESHOLD):
+                score *= float(Config.SOFT_FILTER_LOW_SEMANTIC_PENALTY)
+
+            chunk["final_score"] = score
+            chunk["keyword_overlap"] = keyword_overlap
+
+            if score >= min_score:
+                adjusted.append(chunk)
+
+        adjusted.sort(key=lambda c: c.get("final_score", 0.0), reverse=True)
+        return adjusted
+
+    @staticmethod
+    def _keyword_overlap(query: str, text: str) -> int:
+        """Count lexical overlap between query and chunk text."""
+        if not query or not text:
+            return 0
+        stop_words = {
+            "what", "how", "why", "when", "where", "which", "is", "are",
+            "does", "do", "can", "the", "a", "an", "in", "of", "and",
+            "or", "to", "for", "on", "with", "by", "from", "as", "at",
+            "about", "into", "be", "this", "that",
+        }
+        query_terms = {
+            w.strip(".,;:()[]{}\"'`).").lower()
+            for w in query.split()
+            if w and w.lower() not in stop_words and len(w.strip(".,;:()[]{}\"'`).")) > 2
+        }
+        if not query_terms:
+            return 0
+        text_terms = {
+            w.strip(".,;:()[]{}\"'`).").lower()
+            for w in text.split()
+            if w and w.lower() not in stop_words and len(w.strip(".,;:()[]{}\"'`).")) > 2
+        }
+        return len(query_terms.intersection(text_terms))
+
+    @staticmethod
+    def _passes_domain_gate(query: str, text: str) -> bool:
+        """Check optional domain keyword gate."""
+        if not Config.ENABLE_DOMAIN_KEYWORD_GATE or not Config.DOMAIN_KEYWORDS:
+            return True
+
+        query_terms = {
+            w.strip(".,;:()[]{}\"'`).").lower()
+            for w in query.split()
+            if w and len(w) > 2
+        }
+        domain_terms = set(Config.DOMAIN_KEYWORDS)
+        if query_terms.isdisjoint(domain_terms):
+            return True
+
+        text_terms = {
+            w.strip(".,;:()[]{}\"'`).").lower()
+            for w in text.split()
+            if w and len(w) > 2
+        }
+        overlap = len(domain_terms.intersection(text_terms))
+        return overlap >= Config.DOMAIN_KEYWORD_MIN_OVERLAP
 
     def _extract_evidence(
         self, query: str, chunks: List[Dict[str, Any]]

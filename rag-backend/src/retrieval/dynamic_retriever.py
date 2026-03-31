@@ -365,8 +365,6 @@ class DynamicRetriever:
 
         chunk_scores.sort(key=lambda x: x["score"], reverse=True)
         for item in chunk_scores:
-            if item["score"] < Config.RETRIEVAL_MIN_SIMILARITY:
-                continue
             idx = item["index"]
             chunk = all_chunks[idx]
             paper_id = chunk.get("paper_id")
@@ -436,14 +434,15 @@ class DynamicRetriever:
         # Sort by RRF score and apply filters
         results = sorted(merged_map.values(), key=lambda x: x.get("rrf_score", 0), reverse=True)
 
-        # Apply metadata and keyword filters post-fusion
+        # Apply metadata filters post-fusion
         filtered_results = []
         for result in results:
             if metadata_filters and not self._passes_metadata_filters(metadata_filters, result):
                 continue
             filtered_results.append(result)
 
-        results = filtered_results[:top_k]
+        # Apply soft precision filtering post-fusion
+        results = self._apply_soft_filtering(main_query, filtered_results)[:top_k]
 
         body_chunks = sum(r.get("section") == "body" for r in results)
         abstract_chunks = sum(r.get("section") == "abstract" for r in results)
@@ -482,27 +481,46 @@ class DynamicRetriever:
                 "evidence_below_threshold": evidence.get("below_threshold", False),
             })
 
-        filtered_chunks: List[Dict[str, Any]] = []
-        evidence_overlap = max(0, int(Config.EVIDENCE_KEYWORD_MIN_OVERLAP))
-        for chunk in enhanced_chunks:
-            chunk_query = chunk.get("matched_query") or query
-            sentence = chunk.get("evidence_sentence", "")
-            target_text = sentence or chunk.get("text", "")
-            if not self._passes_domain_gate(chunk_query, target_text):
-                continue
-            if not self._passes_keyword_filter(chunk_query, target_text, min_overlap=evidence_overlap):
-                continue
-            filtered_chunks.append(chunk)
-
-        if not filtered_chunks and enhanced_chunks:
-            non_below = [c for c in enhanced_chunks if not c.get("evidence_below_threshold")]
-            if non_below:
-                non_below.sort(key=lambda c: float(c.get("evidence_score", 0) or 0), reverse=True)
-                filtered_chunks = non_below[: max(1, min(3, len(non_below)))]
-
         print(f"   ✓ Extracted evidence from {len(enhanced_chunks)} chunks")
-        print(f"   ✓ Retained {len(filtered_chunks)} chunks after evidence-level filtering")
-        return filtered_chunks
+        return enhanced_chunks
+
+    def _apply_soft_filtering(
+        self,
+        query: str,
+        chunks: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Apply soft, score-based precision filtering after RRF fusion."""
+        if not chunks:
+            return []
+
+        adjusted: List[Dict[str, Any]] = []
+        min_score = float(Config.MIN_SCORE_THRESHOLD)
+
+        for chunk in chunks:
+            base_score = float(chunk.get("rrf_score", 0.0) or 0.0)
+            score = base_score
+
+            text = chunk.get("text", "")
+            semantic_score = float(chunk.get("similarity_score", 0.0) or 0.0)
+
+            keyword_overlap = self._keyword_overlap(query, text)
+            if keyword_overlap < int(Config.KEYWORD_MIN_OVERLAP):
+                score *= float(Config.SOFT_FILTER_KEYWORD_PENALTY)
+
+            if not self._passes_domain_gate(query, text):
+                score *= float(Config.SOFT_FILTER_DOMAIN_PENALTY)
+
+            if semantic_score < float(Config.SOFT_FILTER_LOW_SEMANTIC_THRESHOLD):
+                score *= float(Config.SOFT_FILTER_LOW_SEMANTIC_PENALTY)
+
+            chunk["final_score"] = score
+            chunk["keyword_overlap"] = keyword_overlap
+
+            if score >= min_score:
+                adjusted.append(chunk)
+
+        adjusted.sort(key=lambda c: c.get("final_score", 0.0), reverse=True)
+        return adjusted
 
     @staticmethod
     def _keyword_overlap(query: str, text: str) -> int:

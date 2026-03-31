@@ -162,8 +162,6 @@ class Retriever:
             for similarity_score, embedding_idx in zip(distances, indices):
                 if embedding_idx == -1:
                     continue
-                if similarity_score < Config.RETRIEVAL_MIN_SIMILARITY:
-                    continue
 
                 chunk = chunks_collection.find_one(
                     {"embedding_index": int(embedding_idx)}
