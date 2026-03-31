@@ -18,6 +18,7 @@ dependencies = [
     
     # Vector Store
     "faiss-cpu>=1.7.4",           # FAISS vector search
+    "rank-bm25>=0.2.2",           # BM25 keyword search for hybrid retrieval
     
     # Database (for later - commented for testing)
     "pymongo>=4.6.0",             # MongoDB driver

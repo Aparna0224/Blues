@@ -171,13 +171,25 @@ async def run_query(req: QueryRequest):
                 metadata_filters=req.filters,
             )
         else:
-            retriever = Retriever(use_evidence=True)
-            chunks = retriever.multi_retrieve(
-                search_queries,
-                top_k_per_query=max(5, len(sub_questions) * 3),
-                max_total=effective_top_k,
-                metadata_filters=req.filters,
-            )
+            # Cached mode: use hybrid retrieval if enabled
+            if Config.HYBRID_RETRIEVAL_ENABLED:
+                from src.retrieval.hybrid_retriever import HybridRetriever
+
+                hybrid_retriever = HybridRetriever(use_evidence=True)
+                chunks = hybrid_retriever.multi_retrieve(
+                    search_queries,
+                    top_k_per_query=max(5, len(sub_questions) * 3),
+                    max_total=effective_top_k,
+                    metadata_filters=req.filters,
+                )
+            else:
+                retriever = Retriever(use_evidence=True)
+                chunks = retriever.multi_retrieve(
+                    search_queries,
+                    top_k_per_query=max(5, len(sub_questions) * 3),
+                    max_total=effective_top_k,
+                    metadata_filters=req.filters,
+                )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Retrieval failed: {e}")
 

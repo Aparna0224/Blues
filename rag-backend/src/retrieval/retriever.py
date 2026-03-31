@@ -132,6 +132,81 @@ class Retriever:
                     return False
         return True
     
+    def semantic_retrieve(
+        self,
+        query: str,
+        top_k: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Run FAISS semantic search only — no keyword or domain filtering.
+
+        Designed as a clean input channel for RRF fusion in HybridRetriever.
+        Skips keyword overlap filter and domain keyword gate to avoid
+        dropping semantically relevant results before fusion.
+
+        Args:
+            query: User query string.
+            top_k: Number of top results to return.
+
+        Returns:
+            List of chunk dicts ranked by cosine similarity, with
+            similarity_score field. No keyword/domain filtering applied.
+        """
+        try:
+            query_embedding = self.embedder.embed_text(query)
+            distances, indices = self.vector_store.search(query_embedding, top_k)
+
+            chunks_collection = self.mongo.get_chunks_collection()
+            papers_collection = self.mongo.get_papers_collection()
+
+            results = []
+            for similarity_score, embedding_idx in zip(distances, indices):
+                if embedding_idx == -1:
+                    continue
+                if similarity_score < Config.RETRIEVAL_MIN_SIMILARITY:
+                    continue
+
+                chunk = chunks_collection.find_one(
+                    {"embedding_index": int(embedding_idx)}
+                )
+                if not chunk:
+                    continue
+
+                paper = papers_collection.find_one(
+                    {"paper_id": chunk.get("paper_id")}
+                )
+                metadata = chunk.get("metadata") or {}
+                if not metadata and paper:
+                    metadata = {
+                        "title": paper.get("title", ""),
+                        "year": paper.get("year", ""),
+                        "section": chunk.get("section", "abstract"),
+                        "summary": "",
+                        "tags": [],
+                        "category": "general",
+                        "source": paper.get("source", ""),
+                    }
+
+                results.append({
+                    "chunk_id": chunk.get("chunk_id"),
+                    "text": chunk.get("text"),
+                    "paper_id": chunk.get("paper_id"),
+                    "paper_title": (
+                        paper.get("title", "Unknown") if paper else "Unknown"
+                    ),
+                    "paper_year": (
+                        paper.get("year", "N/A") if paper else "N/A"
+                    ),
+                    "similarity_score": float(similarity_score),
+                    "section": chunk.get("section", "abstract"),
+                    "metadata": metadata,
+                })
+
+            return results
+
+        except Exception as e:
+            print(f"✗ Error in semantic_retrieve: {e}")
+            return []
+
     def retrieve_chunks(
         self,
         query: str,

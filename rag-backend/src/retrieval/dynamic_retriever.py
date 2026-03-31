@@ -344,9 +344,14 @@ class DynamicRetriever:
         chunk_embeddings = np.array(all_embeddings, dtype=np.float32)
         print(f"   ✓ Ready with {len(chunk_embeddings)} embeddings")
         
-        # Step 10: Similarity search
-        print(f"   🔍 Searching for relevant chunks...")
-        
+        # Step 10: Hybrid search — BM25 + Cosine fused via RRF
+        print(f"   🔍 Hybrid search (BM25 + Cosine → RRF)...")
+
+        from src.retrieval.bm25_index import BM25Index
+        from src.retrieval.hybrid_retriever import HybridRetriever
+
+        # --- Semantic (cosine) scoring per-query ---
+        semantic_ranked: List[Dict[str, Any]] = []
         chunk_scores = []
         for i, chunk_emb in enumerate(chunk_embeddings):
             max_score = 0
@@ -356,24 +361,16 @@ class DynamicRetriever:
                 if score > max_score:
                     max_score = score
                     best_query = search_queries[j] if j < len(search_queries) else main_query
-            
             chunk_scores.append({"index": i, "score": max_score, "matched_query": best_query})
-        
+
         chunk_scores.sort(key=lambda x: x["score"], reverse=True)
-        filtered_scores = [
-            s for s in chunk_scores
-            if s["score"] >= Config.RETRIEVAL_MIN_SIMILARITY
-        ]
-        top_chunks = filtered_scores[:top_k]
-        
-        # Build results
-        results = []
-        for item in top_chunks:
+        for item in chunk_scores:
+            if item["score"] < Config.RETRIEVAL_MIN_SIMILARITY:
+                continue
             idx = item["index"]
             chunk = all_chunks[idx]
             paper_id = chunk.get("paper_id")
             paper = unique_papers.get(paper_id, {})
-
             metadata = chunk.get("metadata") or {
                 "title": chunk.get("paper_title") or paper.get("title", ""),
                 "year": chunk.get("paper_year") or paper.get("year", ""),
@@ -383,8 +380,7 @@ class DynamicRetriever:
                 "category": "general",
                 "source": paper.get("source", ""),
             }
-            
-            result = {
+            semantic_ranked.append({
                 "chunk_id": chunk.get("chunk_id", f"dyn_{idx}"),
                 "text": chunk.get("text", ""),
                 "paper_id": paper_id,
@@ -399,13 +395,55 @@ class DynamicRetriever:
                 "matched_query": item["matched_query"],
                 "source": chunk.get("source", "unknown"),
                 "metadata": metadata,
-            }
+            })
+
+        # --- BM25 scoring ---
+        bm25_index = BM25Index()
+        bm25_index.build_from_chunks(all_chunks)
+
+        # --- Per-query RRF fusion ---
+        merged_map: Dict[str, Dict[str, Any]] = {}
+        for query in search_queries:
+            # BM25 results for this query
+            bm25_results = bm25_index.search(query, top_k=Config.BM25_TOP_K)
+            # Semantic results matching this query
+            query_semantic = [c for c in semantic_ranked if c.get("matched_query") == query]
+            # Fuse
+            fused = HybridRetriever._rrf_fuse(bm25_results, query_semantic, k=Config.RRF_K)
+            for chunk in fused:
+                cid = chunk.get("chunk_id")
+                if not cid:
+                    continue
+                chunk["matched_query"] = query
+                if cid in merged_map:
+                    if chunk.get("rrf_score", 0) > merged_map[cid].get("rrf_score", 0):
+                        merged_map[cid] = chunk
+                else:
+                    merged_map[cid] = chunk
+
+        # Also do a fusion with main_query to catch anything missed
+        bm25_main = bm25_index.search(main_query, top_k=Config.BM25_TOP_K)
+        main_semantic = [c for c in semantic_ranked if c.get("matched_query") == main_query]
+        fused_main = HybridRetriever._rrf_fuse(bm25_main, main_semantic, k=Config.RRF_K)
+        for chunk in fused_main:
+            cid = chunk.get("chunk_id")
+            if not cid:
+                continue
+            if cid not in merged_map:
+                chunk["matched_query"] = main_query
+                merged_map[cid] = chunk
+
+        # Sort by RRF score and apply filters
+        results = sorted(merged_map.values(), key=lambda x: x.get("rrf_score", 0), reverse=True)
+
+        # Apply metadata and keyword filters post-fusion
+        filtered_results = []
+        for result in results:
             if metadata_filters and not self._passes_metadata_filters(metadata_filters, result):
                 continue
-            if not self._passes_domain_gate(item["matched_query"], result.get("text", "")):
-                continue
-            if self._passes_keyword_filter(item["matched_query"], result.get("text", "")):
-                results.append(result)
+            filtered_results.append(result)
+
+        results = filtered_results[:top_k]
 
         body_chunks = sum(r.get("section") == "body" for r in results)
         abstract_chunks = sum(r.get("section") == "abstract" for r in results)
