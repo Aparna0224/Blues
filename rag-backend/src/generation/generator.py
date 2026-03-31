@@ -4,10 +4,25 @@ import re
 from typing import List, Dict, Any, Optional
 import numpy as np
 from src.config import Config
+from src.comparison.conflict_detector import ConflictDetector
 
 
 class AnswerGenerator:
     """Generate answers from retrieved chunks with proper citations."""
+
+    SECTION_MAP = {
+        "introduction": ["introduction", "background", "abstract"],
+        "methodology": ["method", "methods", "methodology", "approach", "body"],
+        "results": ["results", "experiments", "evaluation", "findings"],
+        "discussion": ["discussion", "analysis"],
+        "conclusion": ["conclusion"],
+    }
+    TOP_CHUNKS_PER_SECTION = 2
+    MAX_SECTIONS_PER_PAPER = 3
+    PARAGRAPH_MIN_SENTENCES = 3
+    PARAGRAPH_MAX_SENTENCES = 6
+    SUBQUERY_HARD_GATE_THRESHOLD = 0.55
+    SECTION_PREFERRED_BOOST = 1.2
     
     def __init__(self):
         pass
@@ -51,6 +66,233 @@ class AnswerGenerator:
             snippet_sents = sentences[start:end]
 
         return "\n".join(snippet_sents)
+
+    @staticmethod
+    def _clean_sentence(sentence: str) -> str:
+        """Remove noisy citation/header artifacts from a sentence."""
+        if not sentence:
+            return ""
+        s = sentence.strip()
+        s = re.sub(r"\bet\s+al\.?[,]?\s*\(?\d{4}\)?", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"\[(\d+|\d+\s*[-,]\s*\d+)\]", "", s)
+        s = re.sub(r"\(\s*\d{4}\s*\)", "", s)
+        s = re.sub(r"\s+", " ", s).strip(" -:;,")
+        return s
+
+    @staticmethod
+    def _is_noise_sentence(sentence: str) -> bool:
+        if not sentence:
+            return True
+        s = sentence.strip()
+        if len(s.split()) < 6:
+            return True
+        lower = s.lower()
+        if lower.endswith(":"):
+            return True
+        if any(p in lower for p in ["copyright", "all rights reserved", "doi:", "arxiv:"]):
+            return True
+        return False
+
+    def _build_clean_paragraph(
+        self,
+        text: str,
+        evidence_sentence: str,
+        min_sentences: int | None = None,
+        max_sentences: int | None = None,
+    ) -> tuple[str, int, int]:
+        """Build clean readable paragraph span and return (text, start, end)."""
+        min_s = min_sentences or self.PARAGRAPH_MIN_SENTENCES
+        max_s = max_sentences or self.PARAGRAPH_MAX_SENTENCES
+
+        raw_sentences = self._split_sentences(text)
+        cleaned = [self._clean_sentence(s) for s in raw_sentences]
+        cleaned = [s for s in cleaned if s and not self._is_noise_sentence(s)]
+        if not cleaned:
+            return "", 1, 1
+
+        ev = " ".join((evidence_sentence or "").split()).strip().lower()
+        target_idx = 0
+        if ev:
+            for idx, sent in enumerate(cleaned):
+                low = sent.lower()
+                if ev in low or low in ev:
+                    target_idx = idx
+                    break
+
+        desired = max(min_s, min(max_s, 4))
+        half = desired // 2
+        start = max(0, target_idx - half)
+        end = min(len(cleaned), start + desired)
+        start = max(0, end - desired)
+
+        while (end - start) < min_s and end < len(cleaned):
+            end += 1
+        while (end - start) < min_s and start > 0:
+            start -= 1
+
+        paragraph = " ".join(cleaned[start:end]).strip()
+        if not self._is_coherent_window(cleaned[start:end]):
+            window = self._best_contiguous_window(cleaned, min_s=min_s, max_s=max_s)
+            paragraph = " ".join(window["sentences"]).strip()
+            return paragraph, window["start"] + 1, window["end"]
+
+        return paragraph, start + 1, end
+
+    @staticmethod
+    def _is_coherent_window(sentences: List[str]) -> bool:
+        """Heuristic coherence check for sentence windows."""
+        if len(sentences) <= 1:
+            return True
+        stop = {
+            "the", "and", "for", "with", "this", "that", "from", "into", "using",
+            "are", "was", "were", "has", "have", "had", "into", "over", "under",
+        }
+
+        def terms(s: str) -> set[str]:
+            return {
+                w.strip(".,;:()[]{}\"'`").lower()
+                for w in s.split()
+                if len(w.strip(".,;:()[]{}\"'`")) > 2 and w.strip(".,;:()[]{}\"'`").lower() not in stop
+            }
+
+        overlaps = []
+        for i in range(len(sentences) - 1):
+            a = terms(sentences[i])
+            b = terms(sentences[i + 1])
+            if not a or not b:
+                overlaps.append(0.0)
+                continue
+            overlaps.append(len(a.intersection(b)) / max(1, len(a.union(b))))
+
+        avg_overlap = sum(overlaps) / len(overlaps) if overlaps else 0.0
+        return avg_overlap >= 0.05
+
+    def _best_contiguous_window(
+        self,
+        sentences: List[str],
+        min_s: int,
+        max_s: int,
+    ) -> Dict[str, Any]:
+        """Fallback window chooser maximizing internal lexical coherence."""
+        if not sentences:
+            return {"sentences": [], "start": 0, "end": 0}
+
+        best = {"score": -1.0, "sentences": sentences[:min_s], "start": 0, "end": min(len(sentences), min_s)}
+        max_len = min(max_s, len(sentences))
+        for win_len in range(min_s, max_len + 1):
+            for start in range(0, len(sentences) - win_len + 1):
+                end = start + win_len
+                window = sentences[start:end]
+                score = 1.0 if self._is_coherent_window(window) else 0.0
+                if score > best["score"]:
+                    best = {"score": score, "sentences": window, "start": start, "end": end}
+        return best
+
+    @staticmethod
+    def _confidence_band(score: float) -> str:
+        if score >= 0.75:
+            return "High"
+        if score >= 0.60:
+            return "Medium"
+        return "Low"
+
+    @staticmethod
+    def _section_preferences(sub_question: str) -> set[str]:
+        sq = (sub_question or "").lower()
+        if any(k in sq for k in ["method", "approach", "how"]):
+            return {"Methodology", "Introduction"}
+        if any(k in sq for k in ["result", "performance", "effective", "accuracy"]):
+            return {"Results", "Discussion"}
+        if any(k in sq for k in ["challenge", "limitation", "risk", "issue"]):
+            return {"Discussion", "Conclusion"}
+        return {"Introduction", "Methodology", "Results", "Discussion", "Conclusion", "unknown"}
+
+    @staticmethod
+    def _normalize_section(section: str) -> str:
+        if not section:
+            return "unknown"
+        s = str(section).strip().lower()
+        for canonical, aliases in AnswerGenerator.SECTION_MAP.items():
+            if any(alias in s for alias in aliases):
+                return canonical.title()
+        return "unknown"
+
+    def _build_evidence_unit(
+        self,
+        sub_question: str,
+        chunk: Dict[str, Any],
+        evidence_extractor,
+        subquery_similarity: float,
+    ) -> Dict[str, Any] | None:
+        text = chunk.get("text", "")
+        if not text:
+            return None
+
+        if subquery_similarity < self.SUBQUERY_HARD_GATE_THRESHOLD:
+            return None
+
+        evidence_sentence = chunk.get("evidence_sentence", "")
+        evidence_score = float(chunk.get("evidence_score", 0.0) or 0.0)
+        similarity_score = float(chunk.get("similarity_score", 0.0) or 0.0)
+        sentence_start = None
+        sentence_end = None
+
+        if evidence_extractor:
+            evidence = evidence_extractor.select_best_sentence(sub_question, text)
+            evidence_sentence = evidence.get("best_sentence", evidence_sentence)
+            evidence_score = float(evidence.get("best_score", evidence_score) or 0.0)
+            if evidence.get("below_threshold", False):
+                return None
+
+        sentences = self._split_sentences(text)
+        if not sentences:
+            return None
+
+        target_idx = 0
+        ev = " ".join((evidence_sentence or "").split()).strip().lower()
+        if ev:
+            for idx, sent in enumerate(sentences):
+                s = " ".join(sent.split()).strip().lower()
+                if ev in s or s in ev:
+                    target_idx = idx
+                    break
+
+        snippet, sentence_start, sentence_end = self._build_clean_paragraph(
+            text,
+            evidence_sentence,
+            min_sentences=self.PARAGRAPH_MIN_SENTENCES,
+            max_sentences=self.PARAGRAPH_MAX_SENTENCES,
+        )
+        if not snippet:
+            return None
+
+        confidence = max(
+            0.0,
+            min(
+                1.0,
+                (0.5 * evidence_score)
+                + (0.3 * similarity_score)
+                + (0.2 * subquery_similarity),
+            ),
+        )
+
+        metadata = chunk.get("metadata") or {}
+        section = metadata.get("section") or chunk.get("section", "unknown")
+
+        return {
+            "paper_id": chunk.get("paper_id", ""),
+            "paper_title": chunk.get("paper_title", "Unknown"),
+            "paper_year": chunk.get("paper_year", "N/A"),
+            "section": self._normalize_section(section),
+            "location_start": sentence_start,
+            "location_end": sentence_end,
+            "relevance": similarity_score,
+            "subquery_similarity": subquery_similarity,
+            "confidence": confidence,
+            "confidence_band": self._confidence_band(confidence),
+            "text": snippet,
+            "claim": evidence_sentence or snippet,
+        }
     
     def generate_answer(self, query: str, retrieved_chunks: List[Dict[str, Any]]) -> str:
         """
@@ -204,62 +446,139 @@ class AnswerGenerator:
         
         # Generate answer for each sub-question
         for i, sub_q in enumerate(sub_questions, 1):
-            output += f"{'─'*60}\n"
-            output += f"🔹 Sub-Question {i}: {sub_q}\n"
-            output += f"{'─'*60}\n\n"
+            output += f"🔹 Sub-question: {sub_q}\n\n"
             
             assigned_chunks = chunk_assignments.get(sub_q, [])
             
             if not assigned_chunks:
                 output += "  ⚠ No specific evidence found for this sub-question.\n\n"
                 continue
-            
-            # Generate claims with evidence
-            output += "  📌 Claims & Evidence:\n\n"
-            
-            claim_num = 0
-            for chunk in assigned_chunks:
-                if claim_num >= 5:  # Max 5 per sub-question
-                    break
-                
-                text = chunk.get("text", "")
-                paper_title = chunk.get("paper_title", "Unknown")
-                paper_year = chunk.get("paper_year", "N/A")
-                score = chunk.get("similarity_score", 0)
-                evidence_sentence = chunk.get("evidence_sentence", "")
-                evidence_score = chunk.get("evidence_score", 0)
 
-                metadata = chunk.get("metadata") or {}
-                section = metadata.get("section") or chunk.get("section", "unknown")
-                category = metadata.get("category") or "general"
+            output += "📌 Evidence Units (Grouped by Paper)\n\n"
+            output += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
-                # Re-score evidence against the specific sub-question when possible
-                if evidence_extractor and text:
-                    evidence = evidence_extractor.select_best_sentence(sub_q, text)
-                    evidence_sentence = evidence.get("best_sentence", evidence_sentence)
-                    evidence_score = evidence.get("best_score", evidence_score)
-                    below_threshold = evidence.get("below_threshold", False)
-                    # Skip chunks where even the best sentence is irrelevant
-                    if below_threshold:
-                        continue
-                
-                claim_num += 1
-                output += f"    [{claim_num}] Claim:\n"
-                claim_snippet = self._build_claim_snippet(text, evidence_sentence, max_sentences=3)
-                if evidence_sentence:
-                    display_text = claim_snippet or evidence_sentence
-                    output += f"        \"{display_text}\"\n"
-                    output += f"        Evidence Score: {evidence_score:.4f}\n"
-                else:
-                    display_text = claim_snippet or (text[:400] + "..." if len(text) > 400 else text)
-                    output += f"        \"{display_text}\"\n"
-                
-                output += f"        📄 Source: {paper_title} ({paper_year})\n"
-                output += f"        📍 Location: section={section} | category={category}\n"
-                output += f"        Similarity: {score:.4f}\n\n"
-            
-            if claim_num == 0:
-                output += "  ⚠ No sufficiently relevant evidence found for this sub-question.\n"
+            units: List[Dict[str, Any]] = []
+            for chunk in assigned_chunks[:8]:
+                subquery_similarity = float(
+                    chunk.get(
+                        "subquery_similarity",
+                        chunk.get("query_similarity", chunk.get("similarity_score", 0.0)),
+                    )
+                    or 0.0
+                )
+                unit = self._build_evidence_unit(
+                    sub_q,
+                    chunk,
+                    evidence_extractor,
+                    subquery_similarity,
+                )
+                if unit:
+                    units.append(unit)
+
+            if not units:
+                output += "⚠ No sufficiently relevant evidence found for this sub-question.\n\n"
+                output += "⚠️ Cross-Paper Conflict Analysis\n"
+                output += "No conflict analysis available due to missing evidence.\n\n"
+                output += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                output += "📊 Comparison Summary\n"
+                output += "- Supporting evidence clusters: 0\n"
+                output += "- Conflicting clusters: 0\n"
+                output += "- Consensus level: Low\n\n"
+                continue
+
+            # Deduplicate units by chunk-level claim signature
+            dedup_map: Dict[str, Dict[str, Any]] = {}
+            for u in units:
+                key = f"{u.get('paper_id','')}::{u.get('section','')}::{u.get('claim','')[:100]}"
+                if key not in dedup_map or u.get("relevance", 0) > dedup_map[key].get("relevance", 0):
+                    dedup_map[key] = u
+            units = list(dedup_map.values())
+
+            grouped: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
+            for unit in units:
+                key = f"{unit['paper_title']} ({unit['paper_year']})"
+                section_key = unit.get("section", "unknown")
+                grouped.setdefault(key, {})
+                grouped[key].setdefault(section_key, []).append(unit)
+
+            for paper_key, section_groups in grouped.items():
+                output += f"📄 Paper: {paper_key}\n\n"
+                idx = 1
+                preferred_sections = self._section_preferences(sub_q)
+                ordered_sections = sorted(
+                    section_groups.items(),
+                    key=lambda kv: (
+                        1 if kv[0] in preferred_sections else 0,
+                        max(
+                            (
+                                ((u.get("confidence", 0) * 0.6) + (u.get("relevance", 0) * 0.4))
+                                * (self.SECTION_PREFERRED_BOOST if kv[0] in preferred_sections else 1.0)
+                            )
+                            for u in kv[1]
+                        ) if kv[1] else 0,
+                    ),
+                    reverse=True,
+                )[: self.MAX_SECTIONS_PER_PAPER]
+
+                for section_name, section_units in ordered_sections:
+                    sorted_units = sorted(
+                        section_units,
+                        key=lambda u: (u.get("confidence", 0), u.get("relevance", 0)),
+                        reverse=True,
+                    )[: self.TOP_CHUNKS_PER_SECTION]
+
+                    for unit in sorted_units:
+                        output += f"[{idx}] Section: {section_name}\n"
+                        output += f"Location: sentences {unit['location_start']}–{unit['location_end']}\n"
+                        output += (
+                            f"Relevance: {unit['relevance']:.2f} | "
+                            f"Confidence: {unit['confidence']:.2f}\n\n"
+                        )
+                        output += "Text:\n"
+                        output += f"\"{unit['text']}\"\n\n"
+                        output += "---\n\n"
+                        idx += 1
+                output += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+
+            conflicts = ConflictDetector.detect_conflicts(units)
+            output += "⚠️ Cross-Paper Conflict Analysis\n\n"
+            unique_papers = {u.get("paper_id") for u in units if u.get("paper_id")}
+            if len(unique_papers) < 2:
+                output += "Only one paper available; cross-paper conflict analysis is not applicable.\n\n"
+            elif conflicts:
+                first = conflicts[0]
+                a = first["a"]
+                b = first["b"]
+                output += (
+                    f"- Claim A ({a['paper_title']} - {a['section']}): \"{(a.get('claim') or '')[:180]}\"\n"
+                )
+                output += (
+                    f"- Claim B ({b['paper_title']} - {b['section']}): \"{(b.get('claim') or '')[:180]}\"\n\n"
+                )
+                output += f"Conflict Type: {first['type']}\n"
+                output += f"Conflict Strength: {first['strength']:.2f}\n\n"
+                output += f"Explanation: {first.get('explanation','')[:320]}\n\n"
+            else:
+                output += "No significant conflicts detected.\n"
+                output += (
+                    "Reason: top cross-paper claims are directionally aligned or do not share enough "
+                    "overlapping concepts to indicate a substantive contradiction.\n\n"
+                )
+
+            summary = ConflictDetector.comparison_summary(units, conflicts)
+            grounded = ConflictDetector.grounded_comparison_statements(units)
+
+            output += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            output += "📊 Comparison Summary\n"
+            output += f"- Supporting evidence clusters: {summary['supporting_clusters']}\n"
+            output += f"- Conflicting clusters: {summary['conflicting_clusters']}\n"
+            output += f"- Consensus level: {summary['consensus_level']}\n"
+            if grounded:
+                output += "- Grounded synthesis statements:\n"
+                for st in grounded[:3]:
+                    refs = [f"u{idx+1}" for idx in st.get("support_indices", [])[:5]]
+                    ref_text = ", ".join(refs) if refs else "none"
+                    output += f"  • {st.get('text', '').strip()} (supports: {ref_text})\n"
             
             output += "\n"
         

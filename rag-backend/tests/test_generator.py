@@ -54,7 +54,13 @@ class TestAnswerGenerator:
 
         output = generator.generate_grouped_answer(plan, [chunk])
 
-        assert "📍 Location: section=methodology | category=rag" in output
+        assert "📌 Evidence Units (Grouped by Paper)" in output
+        assert "Section: Methodology" in output
+        assert "Location: sentences" in output
+        assert "Relevance:" in output
+        assert "Confidence:" in output
         assert "RAG combines retrieval with generation for grounded outputs." in output
         assert "RAG improves factual grounding by using retrieved documents." in output
         assert "reduces hallucinations" in output
+        assert "⚠️ Cross-Paper Conflict Analysis" in output
+        assert "Comparison Summary" in output
