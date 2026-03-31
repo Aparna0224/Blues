@@ -330,13 +330,27 @@ def _run_agentic_query(
         tracer.mark_failed()
         _save_trace(tracer, mongo)
         return
+
+    unique_paper_ids = {c.get("paper_id") for c in chunks if c.get("paper_id")}
+    if len(unique_paper_ids) < Config.MIN_UNIQUE_PAPERS_FOR_CLAIMS:
+        msg = (
+            "Insufficient source diversity for claim generation: "
+            f"found {len(unique_paper_ids)} unique paper(s), "
+            f"requires at least {Config.MIN_UNIQUE_PAPERS_FOR_CLAIMS}. "
+            "Please broaden the query or increase retrieval breadth."
+        )
+        click.echo(f"❌ {msg}")
+        tracer.record_error("retrieval", RuntimeError(msg))
+        tracer.mark_failed()
+        _save_trace(tracer, mongo)
+        return
     
     # Build per-query retrieval trace
     per_query_trace = []
     for sq in search_queries:
         matching = [
             c for c in chunks
-            if c.get("search_query") == sq or True  # all chunks available
+            if (c.get("matched_query") == sq) or (c.get("search_query") == sq)
         ]
         per_query_trace.append({
             "search_query": sq,

@@ -1,5 +1,6 @@
 """Answer generation with citations."""
 
+import re
 from typing import List, Dict, Any, Optional
 import numpy as np
 from src.config import Config
@@ -10,6 +11,46 @@ class AnswerGenerator:
     
     def __init__(self):
         pass
+
+    @staticmethod
+    def _split_sentences(text: str) -> List[str]:
+        if not text:
+            return []
+        clean = " ".join(text.replace("\n", " ").split())
+        parts = re.split(r"(?<=[.!?])\s+", clean)
+        return [p.strip() for p in parts if p.strip()]
+
+    def _build_claim_snippet(
+        self,
+        text: str,
+        evidence_sentence: str,
+        max_sentences: int = 3,
+    ) -> str:
+        """Build a multi-line claim snippet centered on the evidence sentence."""
+        sentences = self._split_sentences(text)
+        if not sentences:
+            return ""
+
+        ev = " ".join((evidence_sentence or "").split()).strip()
+        target_idx = -1
+        if ev:
+            ev_lower = ev.lower()
+            for idx, sentence in enumerate(sentences):
+                s_lower = sentence.lower()
+                if ev_lower in s_lower or s_lower in ev_lower:
+                    target_idx = idx
+                    break
+
+        if target_idx < 0:
+            snippet_sents = sentences[:max_sentences]
+        else:
+            half = max(0, (max_sentences - 1) // 2)
+            start = max(0, target_idx - half)
+            end = min(len(sentences), start + max_sentences)
+            start = max(0, end - max_sentences)
+            snippet_sents = sentences[start:end]
+
+        return "\n".join(snippet_sents)
     
     def generate_answer(self, query: str, retrieved_chunks: List[Dict[str, Any]]) -> str:
         """
@@ -176,7 +217,11 @@ class AnswerGenerator:
             # Generate claims with evidence
             output += "  📌 Claims & Evidence:\n\n"
             
-            for j, chunk in enumerate(assigned_chunks[:5], 1):  # Max 5 per sub-question
+            claim_num = 0
+            for chunk in assigned_chunks:
+                if claim_num >= 5:  # Max 5 per sub-question
+                    break
+                
                 text = chunk.get("text", "")
                 paper_title = chunk.get("paper_title", "Unknown")
                 paper_year = chunk.get("paper_year", "N/A")
@@ -184,23 +229,37 @@ class AnswerGenerator:
                 evidence_sentence = chunk.get("evidence_sentence", "")
                 evidence_score = chunk.get("evidence_score", 0)
 
+                metadata = chunk.get("metadata") or {}
+                section = metadata.get("section") or chunk.get("section", "unknown")
+                category = metadata.get("category") or "general"
+
                 # Re-score evidence against the specific sub-question when possible
                 if evidence_extractor and text:
                     evidence = evidence_extractor.select_best_sentence(sub_q, text)
                     evidence_sentence = evidence.get("best_sentence", evidence_sentence)
                     evidence_score = evidence.get("best_score", evidence_score)
+                    below_threshold = evidence.get("below_threshold", False)
+                    # Skip chunks where even the best sentence is irrelevant
+                    if below_threshold:
+                        continue
                 
-                output += f"    [{j}] Claim:\n"
+                claim_num += 1
+                output += f"    [{claim_num}] Claim:\n"
+                claim_snippet = self._build_claim_snippet(text, evidence_sentence, max_sentences=3)
                 if evidence_sentence:
-                    output += f"        \"{evidence_sentence}\"\n"
+                    display_text = claim_snippet or evidence_sentence
+                    output += f"        \"{display_text}\"\n"
                     output += f"        Evidence Score: {evidence_score:.4f}\n"
                 else:
-                    # Truncate text for display
-                    display_text = text[:200] + "..." if len(text) > 200 else text
+                    display_text = claim_snippet or (text[:400] + "..." if len(text) > 400 else text)
                     output += f"        \"{display_text}\"\n"
                 
                 output += f"        📄 Source: {paper_title} ({paper_year})\n"
+                output += f"        📍 Location: section={section} | category={category}\n"
                 output += f"        Similarity: {score:.4f}\n\n"
+            
+            if claim_num == 0:
+                output += "  ⚠ No sufficiently relevant evidence found for this sub-question.\n"
             
             output += "\n"
         
@@ -228,10 +287,13 @@ class AnswerGenerator:
         return output
     
     # Minimum chunks each sub-question should receive
-    MIN_CHUNKS_PER_SUBQ = 2
+    MIN_CHUNKS_PER_SUBQ = 0
     # A chunk is multi-assigned to another sub-question only if its score
     # is within this fraction of the best score.  0.80 = must be within 20 %.
     MULTI_ASSIGN_RATIO = 0.80
+    # Enable multi-assignment only when we have enough unique chunks
+    # to avoid repeating the same single chunk under every sub-question.
+    MIN_CHUNKS_FOR_MULTI_ASSIGN_FACTOR = 2
     # Max chunks per sub-question to prevent one sub-q from hoarding everything
     MAX_CHUNKS_PER_SUBQ = 5
 
@@ -264,9 +326,21 @@ class AnswerGenerator:
         from src.embeddings.embedder import get_shared_embedder
 
         assignments: Dict[str, List[Dict[str, Any]]] = {sq: [] for sq in sub_questions}
+        # Track chunk_ids per sub-question to prevent duplicates
+        assigned_ids: Dict[str, set] = {sq: set() for sq in sub_questions}
 
         if not sub_questions or not chunks:
             return assignments
+
+        # Deduplicate input chunks by chunk_id first
+        seen_chunk_ids: set = set()
+        unique_chunks: List[Dict[str, Any]] = []
+        for c in chunks:
+            cid = c.get("chunk_id", id(c))
+            if cid not in seen_chunk_ids:
+                seen_chunk_ids.add(cid)
+                unique_chunks.append(c)
+        chunks = unique_chunks
 
         embedder = get_shared_embedder()
 
@@ -287,54 +361,67 @@ class AnswerGenerator:
         for i, chunk in enumerate(chunks):
             if not chunk.get("text"):
                 continue
+            cid = chunk.get("chunk_id", id(chunk))
 
             scores = score_matrix[i]
             best_j = int(np.argmax(scores))
             best_score = scores[best_j]
 
             if best_score >= min_threshold:
-                if len(assignments[sub_questions[best_j]]) < self.MAX_CHUNKS_PER_SUBQ:
-                    assignments[sub_questions[best_j]].append(chunk)
+                sq = sub_questions[best_j]
+                if len(assignments[sq]) < self.MAX_CHUNKS_PER_SUBQ and cid not in assigned_ids[sq]:
+                    assignments[sq].append(chunk)
+                    assigned_ids[sq].add(cid)
                     chunk_assigned_to[i] = best_j
 
         # ── 3. Selective multi-assignment ─────────────────────────
-        for i, chunk in enumerate(chunks):
-            if not chunk.get("text"):
-                continue
+        # Only allow multi-assignment when there is sufficient evidence.
+        min_chunks_for_multi_assign = max(
+            1,
+            len(sub_questions) * self.MIN_CHUNKS_FOR_MULTI_ASSIGN_FACTOR,
+        )
+        allow_multi_assign = len(chunks) >= min_chunks_for_multi_assign
 
-            scores = score_matrix[i]
-            best_score = max(scores)
-            threshold = best_score * self.MULTI_ASSIGN_RATIO
+        if allow_multi_assign:
+            for i, chunk in enumerate(chunks):
+                if not chunk.get("text"):
+                    continue
+                cid = chunk.get("chunk_id", id(chunk))
 
-            for j, sc in enumerate(scores):
-                if j == chunk_assigned_to.get(i):
-                    continue  # already primary-assigned here
-                if sc >= threshold and sc >= min_threshold:
-                    sq = sub_questions[j]
-                    # Only multi-assign if sub-q needs more and chunk isn't already there
-                    if len(assignments[sq]) < self.MAX_CHUNKS_PER_SUBQ:
-                        if not any(id(c) == id(chunk) for c in assignments[sq]):
+                scores = score_matrix[i]
+                best_score = max(scores)
+                threshold = best_score * self.MULTI_ASSIGN_RATIO
+
+                for j, sc in enumerate(scores):
+                    if j == chunk_assigned_to.get(i):
+                        continue  # already primary-assigned here
+                    if sc >= threshold and sc >= min_threshold:
+                        sq = sub_questions[j]
+                        if len(assignments[sq]) < self.MAX_CHUNKS_PER_SUBQ and cid not in assigned_ids[sq]:
                             assignments[sq].append(chunk)
+                            assigned_ids[sq].add(cid)
 
-        # ── 4. Back-fill guarantee ───────────────────────────────
+        # ── 4. Optional back-fill guarantee ──────────────────────
+        if self.MIN_CHUNKS_PER_SUBQ <= 0:
+            return assignments
+
         for j, sq in enumerate(sub_questions):
             if len(assignments[sq]) >= self.MIN_CHUNKS_PER_SUBQ:
                 continue
 
-            # Rank all chunks by their score for this sub-question (desc)
             ranked = sorted(
                 range(len(chunks)),
                 key=lambda idx: score_matrix[idx][j],
                 reverse=True,
             )
-            existing_ids = {id(c) for c in assignments[sq]}
             for idx in ranked:
                 if len(assignments[sq]) >= self.MIN_CHUNKS_PER_SUBQ:
                     break
                 if score_matrix[idx][j] < min_threshold:
                     continue
-                if id(chunks[idx]) not in existing_ids:
+                cid = chunks[idx].get("chunk_id", id(chunks[idx]))
+                if cid not in assigned_ids[sq]:
                     assignments[sq].append(chunks[idx])
-                    existing_ids.add(id(chunks[idx]))
+                    assigned_ids[sq].add(cid)
 
         return assignments

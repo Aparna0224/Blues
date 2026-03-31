@@ -184,10 +184,25 @@ async def run_query(req: QueryRequest):
     if not chunks:
         raise HTTPException(status_code=404, detail="No relevant chunks found for any search query.")
 
+    unique_paper_ids = {c.get("paper_id") for c in chunks if c.get("paper_id")}
+    if len(unique_paper_ids) < Config.MIN_UNIQUE_PAPERS_FOR_CLAIMS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Insufficient source diversity for claim generation: "
+                f"found {len(unique_paper_ids)} unique paper(s), "
+                f"requires at least {Config.MIN_UNIQUE_PAPERS_FOR_CLAIMS}. "
+                "Please broaden the query, increase documents, or switch retrieval mode."
+            ),
+        )
+
     # Build per-query retrieval trace
     per_query_trace = []
     for sq in search_queries:
-        matching = [c for c in chunks if c.get("search_query") == sq or True]
+        matching = [
+            c for c in chunks
+            if (c.get("matched_query") == sq) or (c.get("search_query") == sq)
+        ]
         per_query_trace.append(
             {
                 "search_query": sq,

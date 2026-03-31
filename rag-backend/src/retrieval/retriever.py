@@ -57,11 +57,12 @@ class Retriever:
         }
         return len(query_terms.intersection(text_terms))
 
-    def _passes_keyword_filter(self, query: str, text: str) -> bool:
+    def _passes_keyword_filter(self, query: str, text: str, min_overlap: int | None = None) -> bool:
         """Return True if query-text keyword overlap meets minimum."""
-        if Config.KEYWORD_MIN_OVERLAP <= 0:
+        required_overlap = Config.KEYWORD_MIN_OVERLAP if min_overlap is None else int(min_overlap)
+        if required_overlap <= 0:
             return True
-        return self._keyword_overlap(query, text) >= Config.KEYWORD_MIN_OVERLAP
+        return self._keyword_overlap(query, text) >= required_overlap
 
     def _passes_domain_gate(self, query: str, text: str) -> bool:
         """Require domain keyword overlap when enabled and query is domain-specific."""
@@ -245,8 +246,27 @@ class Retriever:
                 "evidence_below_threshold": evidence.get("below_threshold", False),
             })
 
+        filtered_chunks: List[Dict[str, Any]] = []
+        evidence_overlap = max(0, int(Config.EVIDENCE_KEYWORD_MIN_OVERLAP))
+        for chunk in enhanced_chunks:
+            chunk_query = chunk.get("matched_query") or query
+            sentence = chunk.get("evidence_sentence", "")
+            target_text = sentence or chunk.get("text", "")
+            if not self._passes_domain_gate(chunk_query, target_text):
+                continue
+            if not self._passes_keyword_filter(chunk_query, target_text, min_overlap=evidence_overlap):
+                continue
+            filtered_chunks.append(chunk)
+
+        if not filtered_chunks and enhanced_chunks:
+            non_below = [c for c in enhanced_chunks if not c.get("evidence_below_threshold")]
+            if non_below:
+                non_below.sort(key=lambda c: float(c.get("evidence_score", 0) or 0), reverse=True)
+                filtered_chunks = non_below[: max(1, min(3, len(non_below)))]
+
         print(f"✓ Extracted evidence from {len(enhanced_chunks)} chunks")
-        return enhanced_chunks
+        print(f"✓ Retained {len(filtered_chunks)} chunks after evidence-level filtering")
+        return filtered_chunks
     
     def format_retrieval_results(self, results: List[Dict[str, Any]]) -> str:
         """

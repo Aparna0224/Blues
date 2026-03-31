@@ -5,11 +5,12 @@ import nltk
 from typing import List, Dict, Any
 from src.config import Config
 
-# Download required NLTK data
-try:
-    nltk.data.find('tokenizers/punkt')
-except LookupError:
-    nltk.download('punkt')
+# Download required NLTK data (punkt_tab for NLTK ≥ 3.9, punkt for older)
+for _resource, _name in [('tokenizers/punkt_tab', 'punkt_tab'), ('tokenizers/punkt', 'punkt')]:
+    try:
+        nltk.data.find(_resource)
+    except LookupError:
+        nltk.download(_name, quiet=True)
 
 
 class TextChunker:

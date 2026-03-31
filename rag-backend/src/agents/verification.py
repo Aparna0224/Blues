@@ -615,16 +615,26 @@ class VerificationAgent:
         evidence_list = []
 
         for chunk in chunks:
+            if chunk.get("evidence_below_threshold"):
+                continue
+
             evidence_sentence = chunk.get("evidence_sentence", "")
             claim_text = (
                 evidence_sentence if evidence_sentence
                 else chunk.get("text", "")[:300]
             )
 
+            if not claim_text.strip():
+                continue
+
+            chunk_score = float(chunk.get("similarity_score", 0) or 0)
+            evidence_score = float(chunk.get("evidence_score", 0) or 0)
+            effective_score = min(chunk_score, evidence_score) if evidence_score > 0 else chunk_score
+
             evidence_list.append({
                 "claim": claim_text,
                 "supporting_sentence": evidence_sentence,
-                "similarity_score": chunk.get("similarity_score", 0),
+                "similarity_score": effective_score,
                 "paper_id": chunk.get("paper_id", ""),
                 "paper_title": chunk.get("paper_title", "Unknown"),
                 "year": chunk.get("paper_year", "N/A"),

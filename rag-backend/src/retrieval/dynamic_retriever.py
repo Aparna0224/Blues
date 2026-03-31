@@ -27,7 +27,7 @@ class DynamicRetriever:
     """
     
     # Minimum cosine similarity between abstract embedding and query
-    ABSTRACT_RELEVANCE_THRESHOLD = 0.35
+    ABSTRACT_RELEVANCE_THRESHOLD = Config.DYNAMIC_ABSTRACT_MIN_SIMILARITY
     
     def __init__(self, use_evidence: bool = True, papers_per_query: int = 5):
         """
@@ -319,12 +319,19 @@ class DynamicRetriever:
                 chunk_data = all_chunks[chunk_idx]
                 embedding_list = new_embeddings[idx_pos].tolist()
                 try:
+                    # Look up the original MongoDB document to preserve all fields
+                    if chunk_idx < len(existing_chunks):
+                        original = existing_chunks[chunk_idx]
+                    else:
+                        new_idx = chunk_idx - len(existing_chunks)
+                        original = new_chunks[new_idx] if new_idx < len(new_chunks) else {}
+                    
+                    store_fields = {k: v for k, v in original.items() if k != "_id"}
+                    store_fields["embedding"] = embedding_list
+                    
                     chunks_collection.update_one(
                         {"chunk_id": chunk_data["chunk_id"]},
-                        {"$set": {
-                            **{k: v for k, v in (new_chunks[chunk_idx - len(existing_chunks)] if chunk_idx >= len(existing_chunks) else existing_chunks[chunk_idx]).items() if k != "_id"},
-                            "embedding": embedding_list
-                        }},
+                        {"$set": store_fields},
                         upsert=True,
                     )
                 except Exception:
@@ -357,7 +364,7 @@ class DynamicRetriever:
             s for s in chunk_scores
             if s["score"] >= Config.RETRIEVAL_MIN_SIMILARITY
         ]
-        top_chunks = (filtered_scores or chunk_scores)[:top_k]
+        top_chunks = filtered_scores[:top_k]
         
         # Build results
         results = []
@@ -437,8 +444,27 @@ class DynamicRetriever:
                 "evidence_below_threshold": evidence.get("below_threshold", False),
             })
 
+        filtered_chunks: List[Dict[str, Any]] = []
+        evidence_overlap = max(0, int(Config.EVIDENCE_KEYWORD_MIN_OVERLAP))
+        for chunk in enhanced_chunks:
+            chunk_query = chunk.get("matched_query") or query
+            sentence = chunk.get("evidence_sentence", "")
+            target_text = sentence or chunk.get("text", "")
+            if not self._passes_domain_gate(chunk_query, target_text):
+                continue
+            if not self._passes_keyword_filter(chunk_query, target_text, min_overlap=evidence_overlap):
+                continue
+            filtered_chunks.append(chunk)
+
+        if not filtered_chunks and enhanced_chunks:
+            non_below = [c for c in enhanced_chunks if not c.get("evidence_below_threshold")]
+            if non_below:
+                non_below.sort(key=lambda c: float(c.get("evidence_score", 0) or 0), reverse=True)
+                filtered_chunks = non_below[: max(1, min(3, len(non_below)))]
+
         print(f"   ✓ Extracted evidence from {len(enhanced_chunks)} chunks")
-        return enhanced_chunks
+        print(f"   ✓ Retained {len(filtered_chunks)} chunks after evidence-level filtering")
+        return filtered_chunks
 
     @staticmethod
     def _keyword_overlap(query: str, text: str) -> int:
@@ -464,10 +490,11 @@ class DynamicRetriever:
         }
         return len(query_terms.intersection(text_terms))
 
-    def _passes_keyword_filter(self, query: str, text: str) -> bool:
-        if Config.KEYWORD_MIN_OVERLAP <= 0:
+    def _passes_keyword_filter(self, query: str, text: str, min_overlap: int | None = None) -> bool:
+        required_overlap = Config.KEYWORD_MIN_OVERLAP if min_overlap is None else int(min_overlap)
+        if required_overlap <= 0:
             return True
-        return self._keyword_overlap(query, text) >= Config.KEYWORD_MIN_OVERLAP
+        return self._keyword_overlap(query, text) >= required_overlap
 
     def _passes_domain_gate(self, query: str, text: str) -> bool:
         if not Config.ENABLE_DOMAIN_KEYWORD_GATE or not Config.DOMAIN_KEYWORDS:

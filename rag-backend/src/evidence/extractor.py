@@ -44,6 +44,23 @@ class EvidenceExtractor:
         "published by", "accepted for", "submitted to",
     ]
 
+    _STOP_WORDS = {
+        "what", "how", "why", "when", "where", "which", "is", "are",
+        "does", "do", "can", "the", "a", "an", "in", "of", "and",
+        "or", "to", "for", "on", "with", "by", "from", "as", "at",
+        "about", "into", "be", "this", "that", "it", "its", "their",
+        "they", "them", "we", "our", "you", "your", "using", "used",
+        "use", "uses", "benefits", "benefit",
+    }
+
+    _PROMPT_NOISE_PREFIXES = (
+        "query:",
+        "question:",
+        "task:",
+        "instruction:",
+        "prompt:",
+    )
+
     @classmethod
     def _is_junk_sentence(cls, sentence: str) -> bool:
         """Return True if the sentence looks like a citation, header, or noise."""
@@ -73,7 +90,32 @@ class EvidenceExtractor:
         if any(pat in lower for pat in cls._CITATION_PATTERNS):
             return True
 
+        # Prompt/template artifacts from scraped data
+        if lower.startswith(cls._PROMPT_NOISE_PREFIXES):
+            return True
+
         return False
+
+    @classmethod
+    def _tokenize_terms(cls, text: str) -> set[str]:
+        if not text:
+            return set()
+        return {
+            w.strip(".,;:()[]{}\"'`).?\n\t").lower()
+            for w in text.split()
+            if len(w.strip(".,;:()[]{}\"'`).?\n\t")) > 1
+            and w.strip(".,;:()[]{}\"'`).?\n\t").lower() not in cls._STOP_WORDS
+        }
+
+    @classmethod
+    def _has_query_term_overlap(cls, query: str, sentence: str, min_overlap: int) -> bool:
+        if min_overlap <= 0:
+            return True
+        query_terms = cls._tokenize_terms(query)
+        sentence_terms = cls._tokenize_terms(sentence)
+        if not query_terms:
+            return True
+        return len(query_terms.intersection(sentence_terms)) >= min_overlap
 
     def split_into_sentences(self, text: str) -> List[str]:
         """
@@ -172,20 +214,31 @@ class EvidenceExtractor:
                 "all_sentences": []
             }
         
-        best_sentence, best_score = similarities[0]
+        min_keyword_overlap = max(0, int(Config.EVIDENCE_KEYWORD_MIN_OVERLAP))
+
+        selected_sentence = ""
+        selected_score = 0.0
+        for cand_sentence, cand_score in similarities:
+            if self._has_query_term_overlap(query, cand_sentence, min_keyword_overlap):
+                selected_sentence = cand_sentence
+                selected_score = cand_score
+                break
+
+        if not selected_sentence:
+            selected_sentence, selected_score = similarities[0]
         
         # If best score is below threshold, return empty
-        if best_score < min_similarity:
+        if selected_score < min_similarity:
             return {
-                "best_sentence": best_sentence,
-                "best_score": best_score,
+                "best_sentence": selected_sentence,
+                "best_score": selected_score,
                 "all_sentences": similarities,
                 "below_threshold": True
             }
         
         return {
-            "best_sentence": best_sentence,
-            "best_score": best_score,
+            "best_sentence": selected_sentence,
+            "best_score": selected_score,
             "all_sentences": similarities,
             "below_threshold": False
         }

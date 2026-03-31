@@ -29,10 +29,6 @@ class EmbeddingGenerator:
         print(f"✓ Loaded embedding model: {Config.EMBEDDING_MODEL}")
 
 
-def get_shared_embedder() -> EmbeddingGenerator:
-    """Return the global EmbeddingGenerator singleton."""
-    return EmbeddingGenerator()
-    
     def embed_text(self, text: str) -> np.ndarray:
         """
         Generate embedding for a single text.
@@ -87,3 +83,8 @@ def get_shared_embedder() -> EmbeddingGenerator:
         
         # Return embeddings as separate array for FAISS
         return embeddings, chunks
+
+
+def get_shared_embedder() -> EmbeddingGenerator:
+    """Return the global EmbeddingGenerator singleton."""
+    return EmbeddingGenerator()
