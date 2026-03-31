@@ -50,6 +50,7 @@ class QueryRequest(BaseModel):
     num_documents: int = Field(default=15, ge=1, le=50, description="Number of documents to retrieve")
     mode: str = Field(default="dynamic", pattern="^(dynamic|cached)$", description="Retrieval mode")
     include_summary: bool = Field(default=True, description="Include LLM summary (Stage 5)")
+    filters: Optional[dict] = Field(default=None, description="Optional metadata filters for retrieval")
 
 
 class QueryResponse(BaseModel):
@@ -164,6 +165,7 @@ async def run_query(req: QueryRequest):
                 search_queries=search_queries,
                 main_query=req.query,
                 top_k=req.num_documents,
+                metadata_filters=req.filters,
             )
         else:
             retriever = Retriever(use_evidence=True)
@@ -171,6 +173,7 @@ async def run_query(req: QueryRequest):
                 search_queries,
                 top_k_per_query=5,
                 max_total=req.num_documents,
+                metadata_filters=req.filters,
             )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Retrieval failed: {e}")

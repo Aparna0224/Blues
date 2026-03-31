@@ -1,7 +1,8 @@
 """Answer generation with citations."""
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import numpy as np
+from src.config import Config
 
 
 class AnswerGenerator:
@@ -152,6 +153,13 @@ class AnswerGenerator:
         
         # Match chunks to sub-questions based on similarity
         chunk_assignments = self._assign_chunks_to_subquestions(sub_questions, chunks)
+
+        evidence_extractor = None
+        try:
+            from src.evidence.extractor import EvidenceExtractor
+            evidence_extractor = EvidenceExtractor()
+        except Exception:
+            evidence_extractor = None
         
         # Generate answer for each sub-question
         for i, sub_q in enumerate(sub_questions, 1):
@@ -175,6 +183,12 @@ class AnswerGenerator:
                 score = chunk.get("similarity_score", 0)
                 evidence_sentence = chunk.get("evidence_sentence", "")
                 evidence_score = chunk.get("evidence_score", 0)
+
+                # Re-score evidence against the specific sub-question when possible
+                if evidence_extractor and text:
+                    evidence = evidence_extractor.select_best_sentence(sub_q, text)
+                    evidence_sentence = evidence.get("best_sentence", evidence_sentence)
+                    evidence_score = evidence.get("best_score", evidence_score)
                 
                 output += f"    [{j}] Claim:\n"
                 if evidence_sentence:
@@ -264,6 +278,8 @@ class AnswerGenerator:
             score_matrix.append(row)
 
         # ── 2. Primary + multi assignment ────────────────────────
+        min_threshold = Config.SUBQUESTION_ASSIGN_THRESHOLD
+
         for i, chunk in enumerate(chunks):
             if not chunk.get("text"):
                 continue
@@ -273,7 +289,7 @@ class AnswerGenerator:
             threshold = best_score * self.MULTI_ASSIGN_RATIO
 
             for j, sc in enumerate(scores):
-                if sc >= threshold:
+                if sc >= threshold and sc >= min_threshold:
                     assignments[sub_questions[j]].append(chunk)
 
         # ── 3. Back-fill guarantee ───────────────────────────────
@@ -291,6 +307,8 @@ class AnswerGenerator:
             for idx in ranked:
                 if len(assignments[sq]) >= self.MIN_CHUNKS_PER_SUBQ:
                     break
+                if score_matrix[idx][j] < min_threshold:
+                    continue
                 if id(chunks[idx]) not in existing_texts:
                     assignments[sq].append(chunks[idx])
                     existing_texts.add(id(chunks[idx]))

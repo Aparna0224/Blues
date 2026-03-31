@@ -5,6 +5,16 @@ export interface QueryRequest {
   num_documents: number;
   mode: 'dynamic' | 'cached';
   include_summary: boolean;
+  filters?: QueryFilters | null;
+}
+
+export interface QueryFilters {
+  section?: string;
+  category?: string;
+  tags?: string[];
+  year?: { min?: number; max?: number };
+  title_contains?: string;
+  source?: string;
 }
 
 export interface PaperInfo {

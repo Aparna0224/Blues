@@ -11,6 +11,7 @@ import nltk
 from typing import List, Dict, Any, Tuple
 import numpy as np
 from src.embeddings.embedder import EmbeddingGenerator
+from src.config import Config
 
 
 class EvidenceExtractor:
@@ -49,6 +50,10 @@ class EvidenceExtractor:
         sentences = nltk.sent_tokenize(text)
         # Filter out very short sentences (likely noise)
         sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
+
+        # Filter out question-like sentences when enabled
+        if Config.FILTER_QUESTION_SENTENCES:
+            sentences = [s for s in sentences if not s.strip().endswith("?")]
         
         return sentences
     
@@ -89,10 +94,10 @@ class EvidenceExtractor:
         return similarities
     
     def select_best_sentence(
-        self, 
-        query: str, 
-        text: str, 
-        min_similarity: float = 0.3
+    self, 
+    query: str, 
+    text: str, 
+    min_similarity: float = Config.EVIDENCE_MIN_SIMILARITY
     ) -> Dict[str, Any]:
         """
         Select the most relevant sentence from text for a given query.

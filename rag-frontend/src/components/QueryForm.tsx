@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { Search, Settings2, Zap, Database, Sparkles, ArrowRight } from 'lucide-react';
-import type { QueryRequest } from '../types';
+import { Search, Settings2, Zap, Database, Sparkles, ArrowRight, Filter } from 'lucide-react';
+import type { QueryRequest, QueryFilters } from '../types';
 
 interface Props {
   onSubmit: (req: QueryRequest) => void;
@@ -13,15 +13,40 @@ export default function QueryForm({ onSubmit, loading }: Props) {
   const [mode, setMode] = useState<'dynamic' | 'cached'>('dynamic');
   const [includeSummary, setIncludeSummary] = useState(true);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [filterSection, setFilterSection] = useState('');
+  const [filterCategory, setFilterCategory] = useState('');
+  const [filterTags, setFilterTags] = useState('');
+  const [filterYearMin, setFilterYearMin] = useState('');
+  const [filterYearMax, setFilterYearMax] = useState('');
+  const [filterTitleContains, setFilterTitleContains] = useState('');
+  const [filterSource, setFilterSource] = useState('');
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!query.trim() || loading) return;
+    const filters: QueryFilters = {};
+    if (filterSection) filters.section = filterSection;
+    if (filterCategory) filters.category = filterCategory;
+    if (filterTags.trim()) {
+      filters.tags = filterTags
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean);
+    }
+    if (filterYearMin || filterYearMax) {
+      filters.year = {};
+      if (filterYearMin) filters.year.min = Number(filterYearMin);
+      if (filterYearMax) filters.year.max = Number(filterYearMax);
+    }
+    if (filterTitleContains) filters.title_contains = filterTitleContains;
+    if (filterSource) filters.source = filterSource;
+
     onSubmit({
       query: query.trim(),
       num_documents: numDocs,
       mode,
       include_summary: includeSummary,
+      filters: Object.keys(filters).length ? filters : undefined,
     });
   };
 
@@ -176,6 +201,92 @@ export default function QueryForm({ onSubmit, loading }: Props) {
                 includeSummary ? 'translate-x-[18px]' : ''
               }`} />
             </button>
+          </div>
+
+          {/* Metadata filters */}
+          <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-4">
+            <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
+              <Filter size={14} className="text-slate-500" />
+              Metadata Filters
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Section</label>
+                <select
+                  value={filterSection}
+                  onChange={(e) => setFilterSection(e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
+                >
+                  <option value="">Any</option>
+                  <option value="abstract">Abstract</option>
+                  <option value="body">Body</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Category</label>
+                <input
+                  type="text"
+                  value={filterCategory}
+                  onChange={(e) => setFilterCategory(e.target.value)}
+                  placeholder="e.g., rag, retrieval"
+                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Tags</label>
+                <input
+                  type="text"
+                  value={filterTags}
+                  onChange={(e) => setFilterTags(e.target.value)}
+                  placeholder="comma-separated tags"
+                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Title contains</label>
+                <input
+                  type="text"
+                  value={filterTitleContains}
+                  onChange={(e) => setFilterTitleContains(e.target.value)}
+                  placeholder="keyword in title"
+                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Year min</label>
+                <input
+                  type="number"
+                  value={filterYearMin}
+                  onChange={(e) => setFilterYearMin(e.target.value)}
+                  placeholder="2018"
+                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Year max</label>
+                <input
+                  type="number"
+                  value={filterYearMax}
+                  onChange={(e) => setFilterYearMax(e.target.value)}
+                  placeholder="2024"
+                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Source</label>
+                <select
+                  value={filterSource}
+                  onChange={(e) => setFilterSource(e.target.value)}
+                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
+                >
+                  <option value="">Any</option>
+                  <option value="openalex">OpenAlex</option>
+                  <option value="semantic_scholar">Semantic Scholar</option>
+                </select>
+              </div>
+            </div>
           </div>
         </div>
       )}

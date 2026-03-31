@@ -30,6 +30,21 @@ class Config:
     
     # Retrieval Settings
     TOP_K = int(os.getenv("TOP_K", 5))
+    RETRIEVAL_MIN_SIMILARITY = float(os.getenv("RETRIEVAL_MIN_SIMILARITY", "0.35"))
+    SUBQUESTION_ASSIGN_THRESHOLD = float(os.getenv("SUBQUESTION_ASSIGN_THRESHOLD", "0.35"))
+    EVIDENCE_MIN_SIMILARITY = float(os.getenv("EVIDENCE_MIN_SIMILARITY", "0.45"))
+    KEYWORD_MIN_OVERLAP = int(os.getenv("KEYWORD_MIN_OVERLAP", "1"))
+    FILTER_QUESTION_SENTENCES = os.getenv("FILTER_QUESTION_SENTENCES", "True").lower() == "true"
+    ENABLE_DOMAIN_KEYWORD_GATE = os.getenv("ENABLE_DOMAIN_KEYWORD_GATE", "True").lower() == "true"
+    DOMAIN_KEYWORD_MIN_OVERLAP = int(os.getenv("DOMAIN_KEYWORD_MIN_OVERLAP", "1"))
+    DOMAIN_KEYWORDS = [
+        term.strip().lower()
+        for term in os.getenv(
+            "DOMAIN_KEYWORDS",
+            "rag,retrieval,augmentation,context,grounding,assistant,research,query,documents",
+        ).split(",")
+        if term.strip()
+    ]
     
     # OpenAlex API Settings
     # Rate: 100k credits/day with key, 100 credits/day without

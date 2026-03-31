@@ -58,7 +58,8 @@ class DynamicRetriever:
         self,
         search_queries: List[str],
         main_query: str,
-        top_k: int = 10
+        top_k: int = 10,
+        metadata_filters: Dict[str, Any] | None = None,
     ) -> List[Dict[str, Any]]:
         """
         Two-stage dynamic retrieval:
@@ -255,7 +256,8 @@ class DynamicRetriever:
                 "paper_title": paper.get("title", chunk.get("paper_title", "Unknown")),
                 "paper_year": paper.get("year", chunk.get("paper_year", "N/A")),
                 "section": chunk.get("section", "abstract"),
-                "source": "existing"
+                "source": "existing",
+                "metadata": chunk.get("metadata"),
             })
         
         for chunk in new_chunks:
@@ -267,7 +269,8 @@ class DynamicRetriever:
                 "paper_title": paper.get("title", "Unknown"),
                 "paper_year": paper.get("year", "N/A"),
                 "section": chunk.get("section", "abstract"),
-                "source": "new"
+                "source": "new",
+                "metadata": chunk.get("metadata"),
             })
         
         if not all_chunks:
@@ -297,7 +300,11 @@ class DynamicRetriever:
             chunk_scores.append({"index": i, "score": max_score, "matched_query": best_query})
         
         chunk_scores.sort(key=lambda x: x["score"], reverse=True)
-        top_chunks = chunk_scores[:top_k]
+        filtered_scores = [
+            s for s in chunk_scores
+            if s["score"] >= Config.RETRIEVAL_MIN_SIMILARITY
+        ]
+        top_chunks = (filtered_scores or chunk_scores)[:top_k]
         
         # Build results
         results = []
@@ -306,6 +313,16 @@ class DynamicRetriever:
             chunk = all_chunks[idx]
             paper_id = chunk.get("paper_id")
             paper = unique_papers.get(paper_id, {})
+
+            metadata = chunk.get("metadata") or {
+                "title": chunk.get("paper_title") or paper.get("title", ""),
+                "year": chunk.get("paper_year") or paper.get("year", ""),
+                "section": chunk.get("section", "abstract"),
+                "summary": "",
+                "tags": [],
+                "category": "general",
+                "source": paper.get("source", ""),
+            }
             
             result = {
                 "chunk_id": chunk.get("chunk_id", f"dyn_{idx}"),
@@ -321,11 +338,17 @@ class DynamicRetriever:
                 "section": chunk.get("section", "abstract"),
                 "matched_query": item["matched_query"],
                 "source": chunk.get("source", "unknown"),
+                "metadata": metadata,
             }
-            results.append(result)
-        
-        body_chunks = sum(1 for r in results if r.get("section") == "body")
-        abstract_chunks = sum(1 for r in results if r.get("section") == "abstract")
+            if metadata_filters and not self._passes_metadata_filters(metadata_filters, result):
+                continue
+            if not self._passes_domain_gate(item["matched_query"], result.get("text", "")):
+                continue
+            if self._passes_keyword_filter(item["matched_query"], result.get("text", "")):
+                results.append(result)
+
+        body_chunks = sum(r.get("section") == "body" for r in results)
+        abstract_chunks = sum(r.get("section") == "abstract" for r in results)
         print(f"   ✓ Found {len(results)} relevant chunks ({body_chunks} from full text, {abstract_chunks} from abstracts)")
         
         # Step 11: Extract sentence-level evidence
@@ -349,7 +372,113 @@ class DynamicRetriever:
         if not self.evidence_extractor:
             return chunks
         
-        enhanced_chunks = self.evidence_extractor.extract_evidence_from_chunks(query, chunks)
+        enhanced_chunks: List[Dict[str, Any]] = []
+        for chunk in chunks:
+            chunk_query = chunk.get("matched_query") or query
+            text = chunk.get("text", "")
+            evidence = self.evidence_extractor.select_best_sentence(chunk_query, text)
+            enhanced_chunks.append({
+                **chunk,
+                "evidence_sentence": evidence.get("best_sentence", ""),
+                "evidence_score": evidence.get("best_score", 0.0),
+                "evidence_below_threshold": evidence.get("below_threshold", False),
+            })
+
         print(f"   ✓ Extracted evidence from {len(enhanced_chunks)} chunks")
-        
         return enhanced_chunks
+
+    @staticmethod
+    def _keyword_overlap(query: str, text: str) -> int:
+        if not query or not text:
+            return 0
+        stop_words = {
+            "what", "how", "why", "when", "where", "which", "is", "are",
+            "does", "do", "can", "the", "a", "an", "in", "of", "and",
+            "or", "to", "for", "on", "with", "by", "from", "as", "at",
+            "about", "into", "be", "this", "that",
+        }
+        query_terms = {
+            w.strip(".,;:()[]{}\"'`).")
+            for w in query.lower().split()
+            if w and w not in stop_words and len(w) > 2
+        }
+        if not query_terms:
+            return 0
+        text_terms = {
+            w.strip(".,;:()[]{}\"'`).")
+            for w in text.lower().split()
+            if w and w not in stop_words and len(w) > 2
+        }
+        return len(query_terms.intersection(text_terms))
+
+    def _passes_keyword_filter(self, query: str, text: str) -> bool:
+        if Config.KEYWORD_MIN_OVERLAP <= 0:
+            return True
+        return self._keyword_overlap(query, text) >= Config.KEYWORD_MIN_OVERLAP
+
+    def _passes_domain_gate(self, query: str, text: str) -> bool:
+        if not Config.ENABLE_DOMAIN_KEYWORD_GATE or not Config.DOMAIN_KEYWORDS:
+            return True
+
+        query_terms = {
+            w.strip(".,;:()[]{}\"'`).").lower()
+            for w in query.split()
+            if w and len(w) > 2
+        }
+        domain_terms = set(Config.DOMAIN_KEYWORDS)
+        if query_terms.isdisjoint(domain_terms):
+            return True
+
+        text_terms = {
+            w.strip(".,;:()[]{}\"'`).").lower()
+            for w in text.split()
+            if w and len(w) > 2
+        }
+        overlap = len(domain_terms.intersection(text_terms))
+        return overlap >= Config.DOMAIN_KEYWORD_MIN_OVERLAP
+
+    @staticmethod
+    def _passes_metadata_filters(filters: Dict[str, Any] | None, chunk: Dict[str, Any]) -> bool:
+        if not filters:
+            return True
+
+        metadata = chunk.get("metadata", {}) or {}
+        for key, value in filters.items():
+            if key == "section":
+                section = metadata.get("section") or chunk.get("section")
+                if value and section != value:
+                    return False
+            elif key == "year":
+                year = metadata.get("year") or chunk.get("paper_year") or chunk.get("year")
+                if isinstance(value, dict):
+                    min_year = value.get("min")
+                    max_year = value.get("max")
+                    if min_year is not None and year and int(year) < int(min_year):
+                        return False
+                    if max_year is not None and year and int(year) > int(max_year):
+                        return False
+                elif value is not None and year and str(year) != str(value):
+                    return False
+            elif key == "tags":
+                tags = set(metadata.get("tags", []))
+                if isinstance(value, list):
+                    if tags.isdisjoint({str(v).lower() for v in value}):
+                        return False
+                elif value and str(value).lower() not in tags:
+                    return False
+            elif key == "category":
+                category = (metadata.get("category") or "").lower()
+                if value and category != str(value).lower():
+                    return False
+            elif key == "title_contains":
+                title = metadata.get("title") or chunk.get("paper_title", "")
+                if value and str(value).lower() not in title.lower():
+                    return False
+            elif key == "source":
+                source = metadata.get("source") or ""
+                if value and source != value:
+                    return False
+            else:
+                if metadata.get(key) != value:
+                    return False
+        return True
