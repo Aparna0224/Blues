@@ -5,7 +5,7 @@ from pathlib import Path
 from src.database import get_mongo_client
 from src.ingestion.loader import PaperIngestor
 from src.chunking.processor import TextChunker
-from src.embeddings.embedder import EmbeddingGenerator
+from src.embeddings.embedder import EmbeddingGenerator, get_shared_embedder
 from src.vector_store import FAISSVectorStore
 from src.retrieval.retriever import Retriever
 from src.generation.generator import AnswerGenerator
@@ -55,7 +55,7 @@ def build_index():
         chunker = TextChunker()
         chunks = chunker.create_chunks(papers)
         click.echo(f"📝 Created {len(chunks)} chunks")
-        embedder = EmbeddingGenerator()
+        embedder = get_shared_embedder()
         embeddings, chunks = embedder.generate_chunk_embeddings(chunks)
         click.echo(f"✨ Generated {len(embeddings)} embeddings")
         vector_store = FAISSVectorStore()

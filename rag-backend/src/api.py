@@ -154,6 +154,9 @@ async def run_query(req: QueryRequest):
         latency_ms=planning_ms,
     )
 
+    # Scale top_k for agentic queries: each sub-question needs its own evidence
+    effective_top_k = max(req.num_documents, len(sub_questions) * 5, 15)
+
     # ── Step 2: Retrieval ────────────────────────────────────────
     chunks = []
     try:
@@ -164,15 +167,15 @@ async def run_query(req: QueryRequest):
             chunks = dynamic_retriever.dynamic_retrieve(
                 search_queries=search_queries,
                 main_query=req.query,
-                top_k=req.num_documents,
+                top_k=effective_top_k,
                 metadata_filters=req.filters,
             )
         else:
             retriever = Retriever(use_evidence=True)
             chunks = retriever.multi_retrieve(
                 search_queries,
-                top_k_per_query=5,
-                max_total=req.num_documents,
+                top_k_per_query=max(5, len(sub_questions) * 3),
+                max_total=effective_top_k,
                 metadata_filters=req.filters,
             )
     except Exception as e:
@@ -420,10 +423,10 @@ async def upload_paper(file: UploadFile = File(...)):
     # Generate embeddings and add to FAISS
     vectors_added = 0
     try:
-        from src.embeddings.embedder import EmbeddingGenerator
+        from src.embeddings.embedder import get_shared_embedder
         from src.vector_store import FAISSVectorStore
 
-        embedder = EmbeddingGenerator()
+        embedder = get_shared_embedder()
         embedded_chunks = embedder.generate_chunk_embeddings(chunks)
 
         vector_store = FAISSVectorStore()

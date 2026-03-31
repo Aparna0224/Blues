@@ -229,9 +229,11 @@ class AnswerGenerator:
     
     # Minimum chunks each sub-question should receive
     MIN_CHUNKS_PER_SUBQ = 2
-    # A chunk is assigned to a sub-question if its score is within this
-    # fraction of the best score  (e.g. 0.95 → within 5 %)
-    MULTI_ASSIGN_RATIO = 0.95
+    # A chunk is multi-assigned to another sub-question only if its score
+    # is within this fraction of the best score.  0.80 = must be within 20 %.
+    MULTI_ASSIGN_RATIO = 0.80
+    # Max chunks per sub-question to prevent one sub-q from hoarding everything
+    MAX_CHUNKS_PER_SUBQ = 5
 
     def _assign_chunks_to_subquestions(
         self, 
@@ -244,12 +246,13 @@ class AnswerGenerator:
         Strategy
         --------
         1.  Compute cosine similarity of every chunk against every sub-question.
-        2.  Primary assignment: each chunk goes to its best-matching sub-question.
-        3.  Multi-assignment: if a chunk's score for another sub-question is
-            within MULTI_ASSIGN_RATIO of the best score, assign it there too.
-        4.  Guarantee: if any sub-question still has < MIN_CHUNKS_PER_SUBQ,
-            fill it with the globally highest-scoring unassigned chunks for
-            that sub-question (round-robin backfill).
+        2.  Primary assignment: each chunk goes to its SINGLE best sub-question
+            (exclusive — promotes diversity across sub-questions).
+        3.  Multi-assignment: a chunk is also assigned to another sub-question
+            only if its score is within MULTI_ASSIGN_RATIO of the best AND the
+            target sub-question has fewer than MAX_CHUNKS_PER_SUBQ chunks.
+        4.  Guarantee: if any sub-question has < MIN_CHUNKS_PER_SUBQ, backfill
+            with unassigned or least-used chunks.
 
         Args:
             sub_questions: List of sub-questions
@@ -258,14 +261,14 @@ class AnswerGenerator:
         Returns:
             Dictionary mapping sub-questions to their assigned chunks
         """
-        from src.embeddings.embedder import EmbeddingGenerator
+        from src.embeddings.embedder import get_shared_embedder
 
         assignments: Dict[str, List[Dict[str, Any]]] = {sq: [] for sq in sub_questions}
 
         if not sub_questions or not chunks:
             return assignments
 
-        embedder = EmbeddingGenerator()
+        embedder = get_shared_embedder()
 
         # ── 1. Embed everything ──────────────────────────────────
         sq_embeddings = [embedder.embed_text(sq) for sq in sub_questions]
@@ -277,9 +280,24 @@ class AnswerGenerator:
             row = [float(np.dot(c_emb, sq_emb)) for sq_emb in sq_embeddings]
             score_matrix.append(row)
 
-        # ── 2. Primary + multi assignment ────────────────────────
+        # ── 2. Primary assignment (exclusive) ────────────────────
         min_threshold = Config.SUBQUESTION_ASSIGN_THRESHOLD
+        chunk_assigned_to: Dict[int, int] = {}  # chunk_index -> primary sub_q index
 
+        for i, chunk in enumerate(chunks):
+            if not chunk.get("text"):
+                continue
+
+            scores = score_matrix[i]
+            best_j = int(np.argmax(scores))
+            best_score = scores[best_j]
+
+            if best_score >= min_threshold:
+                if len(assignments[sub_questions[best_j]]) < self.MAX_CHUNKS_PER_SUBQ:
+                    assignments[sub_questions[best_j]].append(chunk)
+                    chunk_assigned_to[i] = best_j
+
+        # ── 3. Selective multi-assignment ─────────────────────────
         for i, chunk in enumerate(chunks):
             if not chunk.get("text"):
                 continue
@@ -289,10 +307,16 @@ class AnswerGenerator:
             threshold = best_score * self.MULTI_ASSIGN_RATIO
 
             for j, sc in enumerate(scores):
+                if j == chunk_assigned_to.get(i):
+                    continue  # already primary-assigned here
                 if sc >= threshold and sc >= min_threshold:
-                    assignments[sub_questions[j]].append(chunk)
+                    sq = sub_questions[j]
+                    # Only multi-assign if sub-q needs more and chunk isn't already there
+                    if len(assignments[sq]) < self.MAX_CHUNKS_PER_SUBQ:
+                        if not any(id(c) == id(chunk) for c in assignments[sq]):
+                            assignments[sq].append(chunk)
 
-        # ── 3. Back-fill guarantee ───────────────────────────────
+        # ── 4. Back-fill guarantee ───────────────────────────────
         for j, sq in enumerate(sub_questions):
             if len(assignments[sq]) >= self.MIN_CHUNKS_PER_SUBQ:
                 continue
@@ -303,14 +327,14 @@ class AnswerGenerator:
                 key=lambda idx: score_matrix[idx][j],
                 reverse=True,
             )
-            existing_texts = {id(c) for c in assignments[sq]}
+            existing_ids = {id(c) for c in assignments[sq]}
             for idx in ranked:
                 if len(assignments[sq]) >= self.MIN_CHUNKS_PER_SUBQ:
                     break
                 if score_matrix[idx][j] < min_threshold:
                     continue
-                if id(chunks[idx]) not in existing_texts:
+                if id(chunks[idx]) not in existing_ids:
                     assignments[sq].append(chunks[idx])
-                    existing_texts.add(id(chunks[idx]))
+                    existing_ids.add(id(chunks[idx]))
 
         return assignments

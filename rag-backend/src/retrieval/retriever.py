@@ -2,7 +2,7 @@
 
 import numpy as np
 from typing import List, Dict, Any, Tuple
-from src.embeddings.embedder import EmbeddingGenerator
+from src.embeddings.embedder import get_shared_embedder
 from src.vector_store import FAISSVectorStore
 from src.database import get_mongo_client
 from src.config import Config
@@ -18,7 +18,7 @@ class Retriever:
         Args:
             use_evidence: If True, enables Stage 2 sentence-level evidence extraction
         """
-        self.embedder = EmbeddingGenerator()
+        self.embedder = get_shared_embedder()
         self.vector_store = FAISSVectorStore()
         self.mongo = get_mongo_client()
         self.use_evidence = use_evidence

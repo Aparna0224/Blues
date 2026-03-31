@@ -101,6 +101,16 @@ class VerificationAgent:
         "classification", "prediction", "training", "inference",
         "transformer", "convolutional", "cnn", "rnn", "lstm",
         "transfer learning", "fine-tuning", "pre-trained",
+        # RAG / retrieval / NLP terms
+        "retrieval", "augmented", "augmentation", "generation",
+        "rag", "retrieval-augmented", "embedding", "vector",
+        "semantic search", "knowledge base", "document",
+        "context", "grounding", "hallucination", "factual",
+        "prompt", "large language model", "llm", "chatbot",
+        "question answering", "summarization", "information retrieval",
+        "indexing", "chunking", "tokenization", "fine-tune",
+        "natural language", "nlp", "text mining", "corpus",
+        "language model", "gpt", "bert", "llama", "gemini",
         # Medical / domain terms
         "diagnosis", "diagnostic", "clinical", "patient",
         "medical imaging", "radiology", "pathology", "prognosis",
@@ -109,6 +119,11 @@ class VerificationAgent:
         "accuracy", "performance", "evaluation", "benchmark",
         "recall", "precision", "f1", "auc", "sensitivity",
         "specificity", "robustness",
+        # General research terms
+        "propose", "proposed", "demonstrate", "result", "finding",
+        "experiment", "dataset", "baseline", "comparison", "improve",
+        "outperform", "state-of-the-art", "novel", "contribution",
+        "analysis", "study", "survey", "review", "application",
     ]
 
     # ── Conflict detection — strong, unambiguous phrases only ────
@@ -178,7 +193,9 @@ class VerificationAgent:
         after_dedup = len(deduped)
 
         # ── Step 2: Relevance filter ─────────────────────────────
-        relevant = self._filter_relevant_claims(deduped)
+        query_text = verification_input.get("query", "")
+        sub_questions = verification_input.get("sub_questions", [])
+        relevant = self._filter_relevant_claims(deduped, query_text, sub_questions)
         after_relevance = len(relevant)
 
         # If all claims were filtered, fall back to deduped set
@@ -320,16 +337,44 @@ class VerificationAgent:
 
         return kept
 
+    _STOP_WORDS = {
+        "what", "how", "why", "when", "where", "which", "is", "are",
+        "does", "do", "can", "the", "a", "an", "in", "of", "and",
+        "or", "to", "for", "on", "with", "by", "from", "as", "at",
+        "about", "into", "be", "this", "that", "its", "it", "has",
+        "have", "been", "was", "were", "will", "would", "could",
+        "should", "may", "might", "shall", "not", "but", "if",
+        "their", "they", "them", "we", "our", "you", "your",
+        "uses", "use", "using", "used",
+    }
+
+    @classmethod
+    def _extract_query_terms(cls, query: str, sub_questions: List[str]) -> List[str]:
+        """Extract significant terms from query + sub-questions."""
+        all_text = query + " " + " ".join(sub_questions)
+        words = [
+            w.strip(".,;:()[]{}\"'`).?").lower()
+            for w in all_text.split()
+            if len(w.strip(".,;:()[]{}\"'`).?")) > 2
+        ]
+        return [w for w in words if w and w not in cls._STOP_WORDS]
+
     def _filter_relevant_claims(
-        self, evidence: List[Dict[str, Any]]
+        self, evidence: List[Dict[str, Any]],
+        query: str = "", sub_questions: List[str] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Keep only claims that contain at least one domain-relevant term.
+        Keep only claims that contain at least one domain-relevant term
+        OR a significant term from the query/sub-questions.
 
         This removes generic motivational statements like
         "legal and privacy aspects are rising" that do not describe
         an approach, method, or finding.
         """
+        # Combine static terms with dynamic query-derived terms
+        query_terms = self._extract_query_terms(query, sub_questions or [])
+        all_terms = list(self.RELEVANCE_TERMS) + query_terms
+
         relevant = []
         for item in evidence:
             text = (
@@ -337,7 +382,7 @@ class VerificationAgent:
                 + " "
                 + item.get("supporting_sentence", "")
             ).lower()
-            if any(term in text for term in self.RELEVANCE_TERMS):
+            if any(term in text for term in all_terms):
                 relevant.append(item)
         return relevant
 

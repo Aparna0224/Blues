@@ -2,7 +2,7 @@
 
 import numpy as np
 from typing import List, Dict, Any, Optional
-from src.embeddings.embedder import EmbeddingGenerator
+from src.embeddings.embedder import get_shared_embedder
 from src.database import get_mongo_client
 from src.ingestion.loader import PaperIngestor
 from src.ingestion.fulltext import FullTextFetcher
@@ -37,7 +37,7 @@ class DynamicRetriever:
             use_evidence: Enable sentence-level evidence extraction
             papers_per_query: Number of papers to fetch per search query
         """
-        self.embedder = EmbeddingGenerator()
+        self.embedder = get_shared_embedder()
         self.mongo = get_mongo_client()
         self.ingestor = PaperIngestor(source="openalex")
         self.fulltext_fetcher = FullTextFetcher()
@@ -204,12 +204,22 @@ class DynamicRetriever:
         if abstract_only:
             print(f"   📝 Abstract only: {abstract_only} papers")
         
-        # Step 6: Get existing chunks from MongoDB for DB papers WITHOUT new full text
+        # Step 6: Get existing chunks from MongoDB for DB papers that already have chunks
         existing_chunks = []
         relevant_pids = {p["paper_id"] for p in relevant_papers}
-        reuse_ids = [pid for pid in existing_paper_ids
-                     if pid in relevant_pids
-                     and not unique_papers.get(pid, {}).get("full_text")]
+        
+        # Reuse papers that are already in DB AND have chunks stored
+        # Skip reuse only if we just downloaded new full_text for a paper that
+        # previously only had abstract chunks
+        reuse_ids = []
+        for pid in existing_paper_ids:
+            if pid not in relevant_pids:
+                continue
+            # Check if paper has existing chunks in DB
+            has_chunks = chunks_collection.count_documents({"paper_id": pid}, limit=1) > 0
+            has_new_fulltext = unique_papers.get(pid, {}).get("full_text") and not chunks_collection.find_one({"paper_id": pid, "section": "body"})
+            if has_chunks and not has_new_fulltext:
+                reuse_ids.append(pid)
         
         if reuse_ids:
             existing_chunks = list(chunks_collection.find({"paper_id": {"$in": reuse_ids}}))
@@ -236,20 +246,19 @@ class DynamicRetriever:
                 except Exception:
                     pass
             
-            for chunk in new_chunks:
-                try:
-                    chunks_collection.insert_one(chunk)
-                except Exception:
-                    pass
-            
             print(f"   💾 Stored papers and chunks in MongoDB")
         
-        # Step 8: Combine all chunks
+        # Step 8: Combine all chunks and build embeddings
+        # For existing chunks, reuse stored embeddings; for new chunks, compute them
         all_chunks = []
+        all_embeddings = []
         
+        # Process existing chunks — reuse embeddings from MongoDB
+        existing_with_emb = 0
+        existing_need_emb = []
         for chunk in existing_chunks:
             paper = unique_papers.get(chunk.get("paper_id"), {})
-            all_chunks.append({
+            entry = {
                 "chunk_id": chunk.get("chunk_id"),
                 "text": chunk.get("text", ""),
                 "paper_id": chunk.get("paper_id"),
@@ -258,8 +267,22 @@ class DynamicRetriever:
                 "section": chunk.get("section", "abstract"),
                 "source": "existing",
                 "metadata": chunk.get("metadata"),
-            })
+            }
+            all_chunks.append(entry)
+            
+            # Reuse stored embedding if available
+            stored_emb = chunk.get("embedding")
+            if stored_emb is not None and len(stored_emb) == Config.EMBEDDING_DIMENSION:
+                all_embeddings.append(np.array(stored_emb, dtype=np.float32))
+                existing_with_emb += 1
+            else:
+                existing_need_emb.append(len(all_chunks) - 1)  # index for later
+                all_embeddings.append(None)  # placeholder
         
+        if existing_with_emb:
+            print(f"   ✓ Reused {existing_with_emb} cached embeddings from DB")
+        
+        # Process new chunks
         for chunk in new_chunks:
             paper = unique_papers.get(chunk.get("paper_id"), {})
             all_chunks.append({
@@ -272,6 +295,7 @@ class DynamicRetriever:
                 "source": "new",
                 "metadata": chunk.get("metadata"),
             })
+            all_embeddings.append(None)  # need to compute
         
         if not all_chunks:
             print("   ❌ No chunks available")
@@ -279,10 +303,39 @@ class DynamicRetriever:
         
         print(f"   ✓ Total chunks to search: {len(all_chunks)}")
         
-        # Step 9: Embed all chunks
-        print(f"   🧠 Embedding chunks...")
-        chunk_embeddings = np.array([self.embedder.embed_text(c["text"]) for c in all_chunks])
-        print(f"   ✓ Generated {len(chunk_embeddings)} embeddings")
+        # Step 9: Embed only chunks that don't have cached embeddings
+        indices_needing_emb = [i for i, e in enumerate(all_embeddings) if e is None]
+        
+        if indices_needing_emb:
+            texts_to_embed = [all_chunks[i]["text"] for i in indices_needing_emb]
+            print(f"   🧠 Embedding {len(texts_to_embed)} new chunks (skipping {len(all_chunks) - len(texts_to_embed)} cached)...")
+            new_embeddings = self.embedder.embed_batch(texts_to_embed)
+            
+            for idx_pos, chunk_idx in enumerate(indices_needing_emb):
+                all_embeddings[chunk_idx] = new_embeddings[idx_pos]
+            
+            # Store new chunk embeddings in MongoDB for future reuse
+            for idx_pos, chunk_idx in enumerate(indices_needing_emb):
+                chunk_data = all_chunks[chunk_idx]
+                embedding_list = new_embeddings[idx_pos].tolist()
+                try:
+                    chunks_collection.update_one(
+                        {"chunk_id": chunk_data["chunk_id"]},
+                        {"$set": {
+                            **{k: v for k, v in (new_chunks[chunk_idx - len(existing_chunks)] if chunk_idx >= len(existing_chunks) else existing_chunks[chunk_idx]).items() if k != "_id"},
+                            "embedding": embedding_list
+                        }},
+                        upsert=True,
+                    )
+                except Exception:
+                    pass
+            
+            print(f"   💾 Stored embeddings in MongoDB for reuse")
+        else:
+            print(f"   ✓ All {len(all_chunks)} embeddings loaded from cache")
+        
+        chunk_embeddings = np.array(all_embeddings, dtype=np.float32)
+        print(f"   ✓ Ready with {len(chunk_embeddings)} embeddings")
         
         # Step 10: Similarity search
         print(f"   🔍 Searching for relevant chunks...")

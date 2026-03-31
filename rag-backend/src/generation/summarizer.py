@@ -91,6 +91,14 @@ class PipelineSummarizer:
         try:
             raw = self._llm.generate(prompt)
             summary_text = raw.strip()
+
+            # Detect Groq/LLM error strings leaked as content
+            if summary_text.startswith("Error:") or not summary_text:
+                summary_text = (
+                    "[Summary generation failed: LLM returned an error or empty response]\n"
+                    "The pipeline output above contains the full evidence "
+                    "and verification metrics for manual review."
+                )
         except Exception as e:
             summary_text = (
                 f"[Summary generation failed: {e}]\n"
