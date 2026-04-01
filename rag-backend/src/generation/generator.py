@@ -21,11 +21,14 @@ class AnswerGenerator:
     MAX_SECTIONS_PER_PAPER = 3
     PARAGRAPH_MIN_SENTENCES = 3
     PARAGRAPH_MAX_SENTENCES = 5
-    SUBQUERY_HARD_GATE_THRESHOLD = 0.60
+    SUBQUERY_HARD_GATE_THRESHOLD = 0.50
     SECTION_PREFERRED_BOOST = 1.2
     CONFIDENCE_W1 = 0.45
     CONFIDENCE_W2 = 0.35
     CONFIDENCE_W3 = 0.20
+    SUBQUERY_MATCH_THRESHOLD = 0.50
+    SUBQUERY_STRONG_MATCH_THRESHOLD = 0.60
+    FALLBACK_TOP_K_PER_SUBQ = 2
     
     def __init__(self):
         pass
@@ -251,6 +254,51 @@ class AnswerGenerator:
         if any(k in sq for k in ["challenge", "limitation", "issue", "risk"]):
             return 1.20 if ("discussion" in sec or "conclusion" in sec) else 1.0
         return 1.0
+
+    @staticmethod
+    def _simplify_text(text: str) -> str:
+        if not text:
+            return ""
+        s = text.lower()
+        s = re.sub(r"[^a-z0-9\s]", " ", s)
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
+
+    def _expand_query_forms(self, sub_question: str) -> List[str]:
+        """Build expanded query forms (original + synonym-expanded + simplified)."""
+        base = (sub_question or "").strip()
+        if not base:
+            return []
+
+        synonyms = {
+            "machine learning": ["deep learning", "ml models"],
+            "deep learning": ["neural network", "cnn", "model"],
+            "performance": ["accuracy", "results", "evaluation"],
+            "method": ["approach", "technique", "pipeline"],
+            "challenges": ["limitations", "issues", "difficulties"],
+            "segmentation": ["partition", "delineation", "extraction"],
+        }
+
+        expanded = [base]
+        expanded_text = base
+        lower = base.lower()
+        for key, vals in synonyms.items():
+            if key in lower:
+                expanded_text += " " + " ".join(vals)
+        expanded.append(expanded_text)
+        expanded.append(self._simplify_text(base))
+
+        # Keep unique, non-empty forms
+        unique: List[str] = []
+        seen = set()
+        for q in expanded:
+            nq = q.strip()
+            if not nq:
+                continue
+            if nq not in seen:
+                seen.add(nq)
+                unique.append(nq)
+        return unique
 
     def _best_scored_contiguous_window(
         self,
@@ -605,23 +653,86 @@ class AnswerGenerator:
         except Exception:
             evidence_extractor = None
         
+        global_top_chunks = sorted(
+            chunks,
+            key=lambda c: float(
+                c.get("rrf_score", c.get("final_score", c.get("hybrid_score", c.get("similarity_score", 0.0))))
+                or 0.0
+            ),
+            reverse=True,
+        )
+
         # Generate answer for each sub-question
-        globally_used_chunk_ids: set[str] = set()
         for i, sub_q in enumerate(sub_questions, 1):
             output += f"🔹 Sub-question: {sub_q}\n\n"
             
             assigned_chunks = chunk_assignments.get(sub_q, [])
 
-            # Enforce non-repetition across sub-questions.
-            unique_for_subq: List[Dict[str, Any]] = []
+            # Deduplicate per sub-question by chunk_id (avoid duplication explosion).
+            dedup_assigned: Dict[str, Dict[str, Any]] = {}
             for chunk in assigned_chunks:
                 cid = str(chunk.get("chunk_id", ""))
-                if not cid or cid in globally_used_chunk_ids:
+                if not cid:
                     continue
-                unique_for_subq.append(chunk)
-            assigned_chunks = unique_for_subq
+                score = float(chunk.get("subquery_similarity", 0.0) or 0.0)
+                if cid not in dedup_assigned or score > float(dedup_assigned[cid].get("subquery_similarity", 0.0) or 0.0):
+                    dedup_assigned[cid] = chunk
+            assigned_chunks = list(dedup_assigned.values())
+
+            # Per-subquestion filtering (no global pre-filtering).
+            filtered_chunks = [
+                {
+                    **chunk,
+                    "subquery_similarity": float(
+                        chunk.get(
+                            "subquery_similarity",
+                            chunk.get("query_similarity", chunk.get("similarity_score", 0.0)),
+                        )
+                        or 0.0
+                    ),
+                }
+                for chunk in assigned_chunks
+                if float(
+                    chunk.get(
+                        "subquery_similarity",
+                        chunk.get("query_similarity", chunk.get("similarity_score", 0.0)),
+                    )
+                    or 0.0
+                ) >= self.SUBQUERY_MATCH_THRESHOLD
+            ]
+
+            fallback_triggered = False
+            if not filtered_chunks:
+                fallback_triggered = True
+                fallback_chunks: List[Dict[str, Any]] = []
+                for chunk in global_top_chunks:
+                    if len(fallback_chunks) >= self.FALLBACK_TOP_K_PER_SUBQ:
+                        break
+                    cid = str(chunk.get("chunk_id", ""))
+                    if not cid:
+                        continue
+                    sq_score = float(
+                        (chunk.get("subq_scores") or {}).get(
+                            sub_q,
+                            max(
+                                float(chunk.get("similarity_score", 0.0) or 0.0),
+                                self._lexical_similarity(sub_q, chunk.get("text", "")),
+                            ),
+                        )
+                    )
+                    fallback_chunks.append({
+                        **chunk,
+                        "subquery_similarity": sq_score,
+                        "sub_question": sub_q,
+                    })
+                filtered_chunks = fallback_chunks
+
+            print(
+                f"SubQ: {sub_q} → assigned: {len(assigned_chunks)} → after filter: {len(filtered_chunks)} "
+                f"→ fallback: {fallback_triggered}"
+            )
             
-            if not assigned_chunks:
+            if not filtered_chunks:
                 output += "  ⚠ No specific evidence found for this sub-question.\n\n"
                 continue
 
@@ -629,7 +740,7 @@ class AnswerGenerator:
             output += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
             units: List[Dict[str, Any]] = []
-            for chunk in assigned_chunks[:8]:
+            for chunk in filtered_chunks[:8]:
                 subquery_similarity = float(
                     chunk.get(
                         "subquery_similarity",
@@ -645,9 +756,6 @@ class AnswerGenerator:
                 )
                 if unit:
                     units.append(unit)
-                    cid = str(chunk.get("chunk_id", ""))
-                    if cid:
-                        globally_used_chunk_ids.add(cid)
 
             if not units:
                 output += "⚠ No sufficiently relevant evidence found for this sub-question.\n\n"
@@ -843,19 +951,36 @@ class AnswerGenerator:
 
         embedder = get_shared_embedder()
 
-        # ── 1. Embed everything ──────────────────────────────────
+        # ── 1. Build expanded query forms + embeddings ──────────
+        subq_forms: Dict[str, List[str]] = {
+            sq: self._expand_query_forms(sq)
+            for sq in sub_questions
+        }
+        subq_form_embeddings: Dict[str, List[Any]] = {
+            sq: [embedder.embed_text(form) for form in forms]
+            for sq, forms in subq_forms.items()
+        }
+
+        # Primary embedding kept for compatibility/inspection
         sq_embeddings = [embedder.embed_text(sq) for sq in sub_questions]
         chunk_embeddings = [embedder.embed_text(c.get("text", "")) for c in chunks]
 
-        # score_matrix[i][j] = similarity(chunk_i, sub_question_j)
+        # score_matrix[i][j] = max similarity(chunk_i, expanded_forms_of_subq_j)
         score_matrix: List[List[float]] = []
         for c_emb in chunk_embeddings:
-            row = [float(np.dot(c_emb, sq_emb)) for sq_emb in sq_embeddings]
+            row = []
+            for j, sq in enumerate(sub_questions):
+                _ = sq_embeddings[j]  # retained for explicit compatibility with prior structure
+                form_embs = subq_form_embeddings.get(sq, [])
+                if not form_embs:
+                    row.append(0.0)
+                    continue
+                max_score = max(float(np.dot(c_emb, f_emb)) for f_emb in form_embs)
+                row.append(max_score)
             score_matrix.append(row)
 
-        # ── 2. Primary assignment (exclusive) ────────────────────
-        min_threshold = Config.SUBQUESTION_ASSIGN_THRESHOLD
-        chunk_assigned_to: Dict[int, int] = {}  # chunk_index -> primary sub_q index
+        # ── 2. Chunk mapping: primary + matched_sub_questions ───
+        min_threshold = self.SUBQUERY_MATCH_THRESHOLD
 
         for i, chunk in enumerate(chunks):
             if not chunk.get("text"):
@@ -866,41 +991,38 @@ class AnswerGenerator:
             best_j = int(np.argmax(scores))
             best_score = scores[best_j]
 
-            if best_score >= min_threshold:
-                sq = sub_questions[best_j]
-                if len(assignments[sq]) < self.MAX_CHUNKS_PER_SUBQ and cid not in assigned_ids[sq]:
-                    assignments[sq].append({**chunk, "subquery_similarity": best_score})
-                    assigned_ids[sq].add(cid)
-                    chunk_assigned_to[i] = best_j
+            matched = [
+                {"subq": sub_questions[j], "score": float(sc)}
+                for j, sc in enumerate(scores)
+                if float(sc) >= min_threshold
+            ]
+            matched.sort(key=lambda x: x["score"], reverse=True)
 
-        # ── 3. Selective multi-assignment ─────────────────────────
-        # Only allow multi-assignment when there is sufficient evidence.
-        min_chunks_for_multi_assign = max(
-            1,
-            len(sub_questions) * self.MIN_CHUNKS_FOR_MULTI_ASSIGN_FACTOR,
-        )
-        allow_multi_assign = len(chunks) >= min_chunks_for_multi_assign
+            primary_subq = sub_questions[best_j]
+            subq_scores = {sub_questions[j]: float(sc) for j, sc in enumerate(scores)}
+            base_chunk = {
+                **chunk,
+                "primary_subq": primary_subq,
+                "matched_sub_questions": matched,
+                "subq_scores": subq_scores,
+            }
 
-        if allow_multi_assign:
-            for i, chunk in enumerate(chunks):
-                if not chunk.get("text"):
+            # Ensure at least one assignment (primary), but allow multi-assignment.
+            target_subqs = [m["subq"] for m in matched] if matched else [primary_subq]
+            for sq in target_subqs:
+                sc = float(subq_scores.get(sq, best_score))
+                if len(assignments[sq]) >= self.MAX_CHUNKS_PER_SUBQ:
                     continue
-                cid = chunk.get("chunk_id", id(chunk))
+                if cid in assigned_ids[sq]:
+                    continue
+                assignments[sq].append({
+                    **base_chunk,
+                    "subquery_similarity": sc,
+                    "sub_question": sq,
+                })
+                assigned_ids[sq].add(cid)
 
-                scores = score_matrix[i]
-                best_score = max(scores)
-                threshold = best_score * self.MULTI_ASSIGN_RATIO
-
-                for j, sc in enumerate(scores):
-                    if j == chunk_assigned_to.get(i):
-                        continue  # already primary-assigned here
-                    if sc >= threshold and sc >= min_threshold:
-                        sq = sub_questions[j]
-                        if len(assignments[sq]) < self.MAX_CHUNKS_PER_SUBQ and cid not in assigned_ids[sq]:
-                            assignments[sq].append({**chunk, "subquery_similarity": sc})
-                            assigned_ids[sq].add(cid)
-
-        # ── 4. Optional back-fill guarantee ──────────────────────
+        # ── 3. Optional back-fill guarantee ──────────────────────
         if self.MIN_CHUNKS_PER_SUBQ <= 0:
             return assignments
 
