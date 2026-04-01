@@ -1,32 +1,30 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Cormorant+Garamond:wght@400;500;600;700&display=swap');
 @import "tailwindcss";
 
 :root {
-  /* Dark theme tokens */
-  --bg-primary: #0b0f1e;
-  --bg-secondary: #111827;
-  --bg-card: #161d30;
-  --bg-card-hover: #1c2540;
-  --bg-sidebar: #0d1120;
-  --border: rgba(255, 255, 255, 0.07);
-  --border-accent: rgba(94, 234, 212, 0.25);
+  --bg-primary: #f1f2f5;
+  --bg-secondary: #f7f8fa;
+  --bg-card: #ffffff;
+  --bg-card-hover: #f8f9fb;
+  --bg-sidebar: #eceef2;
+  --border: rgba(15, 23, 42, 0.09);
+  --border-accent: rgba(15, 38, 92, 0.24);
 
-  /* Accent colours */
-  --teal: #5eead4;
-  --teal-dim: #2dd4bf;
-  --cyan: #38bdf8;
-  --indigo: #818cf8;
-  --purple: #a78bfa;
+  --teal: #0f265c;
+  --teal-dim: #1c3f88;
+  --cyan: #294c8e;
+  --indigo: #425d95;
+  --purple: #4d4d9a;
 
-  /* Text */
-  --text-primary: #f1f5f9;
-  --text-secondary: #94a3b8;
-  --text-muted: #475569;
+  --text-primary: #111827;
+  --text-secondary: #374151;
+  --text-muted: #6b7280;
 
-  /* Status */
-  --success: #34d399;
-  --warning: #fbbf24;
-  --danger: #f87171;
+  --success: #1d7948;
+  --warning: #b45309;
+  --danger: #b42318;
+
+  --font-display: 'Cormorant Garamond', Georgia, serif;
 
   /* Sidebar */
   --sidebar-width: 220px;
@@ -68,8 +66,7 @@ body {
 .glass-card {
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: 14px;
-  backdrop-filter: blur(12px);
+  border-radius: 10px;
 }
 
 .glass-card-hover:hover {
@@ -79,7 +76,7 @@ body {
 
 /* ── Gradient text ─────────────────────────────────── */
 .gradient-text {
-  background: linear-gradient(135deg, var(--teal), var(--indigo));
+  background: linear-gradient(135deg, #0f265c, #425d95);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
@@ -88,16 +85,18 @@ body {
 /* ── Prose ─────────────────────────────────────────── */
 .prose h3 {
   font-size: 1.05rem;
-  font-weight: 600;
+  font-weight: 500;
   margin-top: 1.25rem;
   margin-bottom: 0.5rem;
   color: var(--text-primary);
+  font-family: var(--font-display);
 }
 
 .prose p {
   margin-bottom: 0.75rem;
   line-height: 1.7;
   color: var(--text-secondary);
+  font-family: var(--font-display);
 }
 
 .prose ul,
@@ -210,26 +209,26 @@ body {
 /* Teal accent bar on cards */
 .accent-bar {
   height: 2px;
-  background: linear-gradient(90deg, var(--teal), var(--indigo), var(--purple));
+  background: linear-gradient(90deg, #0f265c, #425d95, #4d4d9a);
 }
 
 /* Badge colours */
 .badge-high {
-  background: rgba(52, 211, 153, 0.12);
-  color: #34d399;
-  border: 1px solid rgba(52, 211, 153, 0.2);
+  background: rgba(29, 121, 72, 0.12);
+  color: #1d7948;
+  border: 1px solid rgba(29, 121, 72, 0.24);
 }
 
 .badge-medium {
-  background: rgba(251, 191, 36, 0.12);
-  color: #fbbf24;
-  border: 1px solid rgba(251, 191, 36, 0.2);
+  background: rgba(180, 83, 9, 0.12);
+  color: #b45309;
+  border: 1px solid rgba(180, 83, 9, 0.25);
 }
 
 .badge-low {
-  background: rgba(248, 113, 113, 0.12);
-  color: #f87171;
-  border: 1px solid rgba(248, 113, 113, 0.2);
+  background: rgba(180, 35, 24, 0.12);
+  color: #b42318;
+  border: 1px solid rgba(180, 35, 24, 0.24);
 }
 
 .badge-neutral {
