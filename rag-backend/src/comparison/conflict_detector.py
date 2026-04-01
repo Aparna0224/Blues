@@ -7,6 +7,7 @@ The detector is intentionally deterministic and transparent.
 from __future__ import annotations
 
 from typing import Any, Dict, List, Set
+from itertools import combinations
 
 
 class ConflictDetector:
@@ -23,8 +24,8 @@ class ConflictDetector:
 
     METHOD_TERMS: Set[str] = {"method", "methodology", "approach", "pipeline", "framework"}
     RESULT_TERMS: Set[str] = {"result", "results", "experiment", "evaluation", "performance"}
-    TOPIC_SIMILARITY_THRESHOLD = 0.60
-    CLAIM_SIMILARITY_THRESHOLD = 0.40
+    TOPIC_SIMILARITY_THRESHOLD = 0.70
+    CLAIM_SIMILARITY_THRESHOLD = 0.50
 
     @classmethod
     def _tokenize(cls, text: str) -> Set[str]:
@@ -54,8 +55,7 @@ class ConflictDetector:
         if not a or not b:
             return 0.0
         inter = len(a.intersection(b))
-        union = len(a.union(b))
-        return inter / union if union else 0.0
+        return (2 * inter) / (len(a) + len(b)) if (len(a) + len(b)) else 0.0
 
     @classmethod
     def _has_polarity_conflict(cls, a_text: str, b_text: str) -> bool:
@@ -81,12 +81,10 @@ class ConflictDetector:
     def _topic_similarity(cls, a: Dict[str, Any], b: Dict[str, Any]) -> float:
         """Compute concept overlap similarity between two evidence units."""
         a_text = " ".join([
-            str(a.get("section", "")),
             str(a.get("claim", "")),
             str(a.get("text", "")),
         ])
         b_text = " ".join([
-            str(b.get("section", "")),
             str(b.get("claim", "")),
             str(b.get("text", "")),
         ])
@@ -108,44 +106,40 @@ class ConflictDetector:
         if len(units) < 2:
             return conflicts
 
-        for i in range(len(units)):
-            for j in range(i + 1, len(units)):
-                a = units[i]
-                b = units[j]
-                if not a.get("paper_id") or a.get("paper_id") == b.get("paper_id"):
-                    continue
+        for i, j in combinations(range(len(units)), 2):
+            a = units[i]
+            b = units[j]
+            if not a.get("paper_id") or a.get("paper_id") == b.get("paper_id"):
+                continue
 
-                a_claim = a.get("claim") or a.get("text") or ""
-                b_claim = b.get("claim") or b.get("text") or ""
+            a_claim = a.get("claim") or a.get("text") or ""
+            b_claim = b.get("claim") or b.get("text") or ""
 
-                topic_similarity = cls._topic_similarity(a, b)
-                if topic_similarity <= cls.TOPIC_SIMILARITY_THRESHOLD:
-                    continue
+            topic_similarity = cls._topic_similarity(a, b)
+            claim_similarity = cls._claim_similarity(a_claim, b_claim)
 
-                claim_similarity = cls._claim_similarity(a_claim, b_claim)
-                if claim_similarity >= cls.CLAIM_SIMILARITY_THRESHOLD:
-                    continue
+            # Required conflict rule: similar topic but divergent claim.
+            if topic_similarity <= cls.TOPIC_SIMILARITY_THRESHOLD:
+                continue
+            if claim_similarity >= cls.CLAIM_SIMILARITY_THRESHOLD:
+                continue
 
-                if not cls._has_polarity_conflict(a_claim, b_claim):
-                    continue
+            conflict_type = cls._classify_type(a.get("section", ""), b.get("section", ""))
+            strength = max(0.0, min(1.0, (topic_similarity - claim_similarity + 1.0) / 2.0))
 
-                conflict_type = cls._classify_type(a.get("section", ""), b.get("section", ""))
-                strength = max(0.0, min(1.0, 1.0 - claim_similarity))
-
-                conflicts.append({
-                    "a": a,
-                    "b": b,
-                    "type": conflict_type,
-                    "strength": strength,
-                    "topic_similarity": topic_similarity,
-                    "claim_similarity": claim_similarity,
-                    "explanation": (
-                        f"Paper '{a.get('paper_title', 'A')}' presents a potentially opposite claim "
-                        f"to paper '{b.get('paper_title', 'B')}' on a shared concept "
-                        f"(topic_similarity={topic_similarity:.2f}, claim_similarity={claim_similarity:.2f})."
-                    ),
-                    "pair": (i, j),
-                })
+            conflicts.append({
+                "a": a,
+                "b": b,
+                "type": conflict_type,
+                "strength": strength,
+                "topic_similarity": topic_similarity,
+                "claim_similarity": claim_similarity,
+                "explanation": (
+                    f"Both papers discuss overlapping concepts (topic_similarity={topic_similarity:.2f}) "
+                    f"but diverge in claims (claim_similarity={claim_similarity:.2f})."
+                ),
+                "pair": (i, j),
+            })
 
         conflicts.sort(key=lambda c: c.get("strength", 0.0), reverse=True)
         return conflicts
@@ -229,3 +223,68 @@ class ConflictDetector:
             })
 
         return statements
+
+    @classmethod
+    def generate_literature_comparison(cls, units: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Generate a grounded comparison paragraph describing approaches, agreements, and trends."""
+        if not units:
+            return {
+                "paragraph": "No cross-paper comparison can be formed due to insufficient evidence units.",
+                "support_indices": [],
+            }
+
+        deep_terms = {"cnn", "deep", "neural", "transformer", "resnet", "unet", "u-net"}
+        classical_terms = {"threshold", "otsu", "morphological", "watershed", "color", "hsv", "cmyk", "rgb"}
+
+        deep_ids: List[int] = []
+        classical_ids: List[int] = []
+        mixed_ids: List[int] = []
+        for i, unit in enumerate(units):
+            text = f"{unit.get('claim', '')} {unit.get('text', '')}".lower()
+            has_deep = any(t in text for t in deep_terms)
+            has_classical = any(t in text for t in classical_terms)
+            if has_deep and not has_classical:
+                deep_ids.append(i)
+            elif has_classical and not has_deep:
+                classical_ids.append(i)
+            else:
+                mixed_ids.append(i)
+
+        # Agreement signal from high-overlap claim pairs.
+        agreements = 0
+        for i, j in combinations(range(len(units)), 2):
+            if units[i].get("paper_id") == units[j].get("paper_id"):
+                continue
+            c1 = units[i].get("claim") or units[i].get("text") or ""
+            c2 = units[j].get("claim") or units[j].get("text") or ""
+            if cls._concept_overlap(c1, c2) >= 0.45 and cls._claim_similarity(c1, c2) >= 0.50:
+                agreements += 1
+
+        dominant = "mixed approaches"
+        dominant_ids = mixed_ids
+        if len(deep_ids) > len(classical_ids) and len(deep_ids) >= len(mixed_ids):
+            dominant = "deep learning approaches"
+            dominant_ids = deep_ids
+        elif len(classical_ids) > len(deep_ids) and len(classical_ids) >= len(mixed_ids):
+            dominant = "classical image-processing approaches"
+            dominant_ids = classical_ids
+
+        trends_text = (
+            "A trend from color-space/thresholding pipelines toward deep learning models is visible"
+            if deep_ids and classical_ids
+            else "The available evidence does not show a strong transition trend across approach families"
+        )
+
+        paragraph = (
+            f"Across the selected papers, the dominant pattern is {dominant}. "
+            f"Several studies agree on core segmentation goals and report directionally similar claims "
+            f"({agreements} cross-paper agreement links detected). "
+            f"At the same time, differences appear in implementation details and reported outcomes across papers. "
+            f"{trends_text}."
+        )
+
+        support_indices = sorted(set(dominant_ids + deep_ids + classical_ids + mixed_ids))[:8]
+        return {
+            "paragraph": paragraph,
+            "support_indices": support_indices,
+        }

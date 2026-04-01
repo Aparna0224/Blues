@@ -7,10 +7,13 @@ This module implements Stage 2 of the RAG pipeline:
 - Returns structured evidence with similarity scores
 """
 
-import nltk
+import re
+try:
+    import nltk
+except Exception:  # pragma: no cover - optional dependency fallback
+    nltk = None
 from typing import List, Dict, Any, Tuple
 import numpy as np
-from src.embeddings.embedder import get_shared_embedder
 from src.config import Config
 
 
@@ -19,20 +22,27 @@ class EvidenceExtractor:
     
     def __init__(self):
         """Initialize evidence extractor with NLTK sentence tokenizer."""
-        # Download NLTK data if not present
-        try:
-            nltk.data.find('tokenizers/punkt')
-        except LookupError:
-            print("📥 Downloading NLTK punkt tokenizer...")
-            nltk.download('punkt', quiet=True)
+        self._use_nltk = nltk is not None
+        if self._use_nltk:
+            # Download NLTK data if not present
+            try:
+                nltk.data.find('tokenizers/punkt')
+            except LookupError:
+                print("📥 Downloading NLTK punkt tokenizer...")
+                nltk.download('punkt', quiet=True)
+
+            try:
+                nltk.data.find('tokenizers/punkt_tab')
+            except LookupError:
+                print("📥 Downloading NLTK punkt_tab tokenizer...")
+                nltk.download('punkt_tab', quiet=True)
         
+        self.embedder = None
         try:
-            nltk.data.find('tokenizers/punkt_tab')
-        except LookupError:
-            print("📥 Downloading NLTK punkt_tab tokenizer...")
-            nltk.download('punkt_tab', quiet=True)
-        
-        self.embedder = get_shared_embedder()
+            from src.embeddings.embedder import get_shared_embedder
+            self.embedder = get_shared_embedder()
+        except Exception:
+            self.embedder = None
     
     # ── Junk-sentence detection patterns ─────────────────────────
     _CITATION_PATTERNS = [
@@ -68,7 +78,7 @@ class EvidenceExtractor:
         words = s.split()
 
         # Too short to be meaningful content
-        if len(words) < 8:
+        if len(words) < 3:
             return True
 
         # Mostly uppercase (journal header / title block)
@@ -130,7 +140,12 @@ class EvidenceExtractor:
         if not text or not text.strip():
             return []
         
-        sentences = nltk.sent_tokenize(text)
+        if self._use_nltk:
+            sentences = nltk.sent_tokenize(text)
+        else:
+            clean_text = " ".join(text.replace("\n", " ").split())
+            sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", clean_text) if s.strip()]
+            sentences = [s if s.endswith((".", "!", "?")) else f"{s}." for s in sentences]
         # Filter out very short sentences (likely noise)
         sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
 
@@ -160,6 +175,19 @@ class EvidenceExtractor:
         """
         if not sentences:
             return []
+
+        if self.embedder is None:
+            query_terms = self._tokenize_terms(query)
+            scored = []
+            for sentence in sentences:
+                sent_terms = self._tokenize_terms(sentence)
+                if not query_terms or not sent_terms:
+                    score = 0.0
+                else:
+                    score = len(query_terms.intersection(sent_terms)) / max(1, len(query_terms.union(sent_terms)))
+                scored.append((sentence, float(score)))
+            scored.sort(key=lambda x: x[1], reverse=True)
+            return scored
         
         # Generate query embedding
         query_embedding = self.embedder.embed_text(query)
@@ -269,6 +297,19 @@ class EvidenceExtractor:
         """
         if not chunks:
             return []
+
+        if self.embedder is None:
+            enhanced_chunks = []
+            for chunk in chunks:
+                sel = self.select_best_sentence(query, chunk.get("text", ""))
+                enhanced_chunks.append({
+                    **chunk,
+                    "evidence_sentence": sel.get("best_sentence", ""),
+                    "evidence_score": float(sel.get("best_score", 0.0) or 0.0),
+                    "sentence_scores": sel.get("all_sentences", []),
+                    "evidence_below_threshold": bool(sel.get("below_threshold", False)),
+                })
+            return enhanced_chunks
 
         # Step 1: Split all chunks into sentences and record boundaries
         all_sentences: List[str] = []

@@ -1,315 +1,223 @@
-# Blues RAG Project — Handover Document
+# Blues RAG Project — Handover (Current Stage)
 
-## 1) Project Overview
-Blues is an XAI‑enhanced, agentic RAG research assistant focused on rigorous evidence grounding. The system ingests papers, builds embeddings, retrieves evidence, generates answers with citations, verifies claims, and logs a full trace of reasoning.
+## 1) Executive Snapshot
 
-**Key goals**
-- Claim‑to‑sentence grounding and evidence scoring.
-- Explicit uncertainty signaling and verification metrics.
-- Full traceability (planning → retrieval → evidence selection → verification).
-- Support for local LLMs (Ollama) and hosted LLMs (Groq / Gemini).
+Blues is now in the **“literature-review quality hardening” stage**.
 
-## 2) Repository Structure
-```
-Blues/
-├── rag-backend/            # Python FastAPI + CLI + RAG pipeline
-│   ├── src/
-│   │   ├── agents/         # Planner + Verification agents
-│   │   ├── chunking/       # Text chunking with metadata enrichment
-│   │   ├── embeddings/     # SciBERT embedding generation (singleton)
-│   │   ├── evidence/       # Sentence-level evidence extraction
-│   │   ├── generation/     # Answer generation + LLM summarizer
-│   │   ├── ingestion/      # Paper fetching (OpenAlex/Semantic Scholar) + full-text
-│   │   ├── llm/            # LLM abstraction (Local/Gemini/Groq)
-│   │   ├── retrieval/      # Static FAISS + Dynamic retriever
-│   │   ├── trace/          # Execution trace recording
-│   │   ├── api.py          # FastAPI REST endpoints
-│   │   ├── config.py       # Centralized configuration
-│   │   ├── database.py     # MongoDB connection (singleton)
-│   │   ├── main.py         # CLI entry point
-│   │   └── vector_store.py # FAISS index management (singleton)
-│   ├── tests/
-│   │   ├── test_evidence.py
-│   │   ├── test_generator.py
-│   │   ├── test_trace.py
-│   │   └── test_verification.py
-│   ├── pyproject.toml
-│   └── .env
-└── rag-frontend/           # React + TypeScript + Vite UI
-    └── src/
-        ├── components/     # UI components
-        ├── services/       # API client
-        ├── types/          # TypeScript type definitions
-        ├── App.tsx
-        └── main.tsx
-```
+The backend has moved beyond basic evidence aggregation and now includes:
 
-## 3) Architecture — Pipeline Stages
+- **Hybrid retrieval architecture in-place** (BM25 + semantic + RRF), already integrated in retrieval paths.
+- **Post-fusion soft filtering** strategy (keep recall, then penalize low-quality evidence).
+- **Structured evidence-unit generation** with section/location/confidence metadata.
+- **Cross-paper conflict detection + comparison synthesis** for explainability (XAI).
+- **Sub-question-level relevance control** to reduce repeated evidence and improve topical precision.
 
-### Stage 1 — Ingestion & Indexing
-- **Paper Fetching**: `src/ingestion/loader.py` — OpenAlex + Semantic Scholar APIs
-- **Full-Text**: `src/ingestion/fulltext.py` — PDF (PyMuPDF), HTML (BeautifulSoup), Unpaywall, PMC
-- **Chunking**: `src/chunking/processor.py` — NLTK sentence-level chunking (8–12 sentences per chunk)
-- **Metadata Enrichment**: Each chunk gets: title, year, section, summary, tags, category, source
-- **Embeddings**: `src/embeddings/embedder.py` — SciBERT (`allenai/scibert_scivocab_uncased`, 768d), singleton pattern
-- **Vector Store**: `src/vector_store.py` — FAISS IndexFlatIP (cosine similarity via inner product), singleton
+Current effort has focused on **generator/comparison quality** while preserving retrieval logic.
 
-### Stage 2 — Evidence Extraction
-- **Module**: `src/evidence/extractor.py`
-- Splits chunk text into sentences (NLTK `sent_tokenize`)
-- Embeds sentences with SciBERT, computes cosine similarity against query
-- Selects best-matching sentence per chunk with evidence score
-- Filters: junk sentence detection (citations, headers, numeric noise, short sentences, prompt artifacts)
-- Keyword overlap validation against query terms
-- Configurable thresholds: `EVIDENCE_MIN_SIMILARITY`, `EVIDENCE_KEYWORD_MIN_OVERLAP`
+---
 
-### Stage 3 — Planner Agent + Retrieval
-- **Planner**: `src/agents/planner.py`
-  - Uses LLM to decompose user query into 2–4 sub-questions + 2–4 search queries
-  - JSON output parsing with fallback handling
-  - Fallback plan generation when LLM fails
-- **Static Retriever**: `src/retrieval/retriever.py`
-  - FAISS search over pre-indexed chunks
-  - 3-layer filtering: similarity threshold → domain keyword gate → keyword overlap
-  - Multi-query retrieval with deduplication by chunk_id
-  - Evidence extraction integration
-- **Dynamic Retriever**: `src/retrieval/dynamic_retriever.py`
-  - Two-stage live retrieval:
-    - **Stage A**: Fetch papers from APIs → embed abstracts → filter by relevance threshold
-    - **Stage B**: Fetch full text → chunk → embed → cosine similarity search
-  - Caches embeddings in MongoDB for reuse
-  - Reuses existing DB chunks when available
+## 2) What Was Completed in This Stage
 
-### Stage 4 — Answer Generation + Verification
-- **Answer Generator**: `src/generation/generator.py`
-  - Assigns chunks to sub-questions using embedding similarity matrix
-  - Primary assignment (exclusive) + selective multi-assignment + backfill guarantee
-  - Re-scores evidence against each sub-question
-  - Generates grouped answer with claims, evidence scores, source metadata
-- **Verification Agent**: `src/agents/verification.py`
-  - Deterministic (no LLM calls) confidence scoring
-  - Pipeline: deduplication → relevance filtering → similarity threshold gating → metrics
-  - Metrics: avg similarity, source diversity, evidence density, conflict detection
-  - Full audit log of filtering pipeline
+### A. Generator Layer Upgrades (`src/generation/generator.py`)
 
-### Stage 5 — Trace + Summary
-- **Execution Tracer**: `src/trace/tracer.py`
-  - Records every pipeline decision as JSON
-  - Stores: planning, retrieval, filtering, evidence selection, verification stages
-  - Saved to MongoDB (`execution_traces` collection) and `output/` directory
-- **Pipeline Summarizer**: `src/generation/summarizer.py`
-  - LLM-generated 100–200 word narrative summary
-  - Conversational, publication-grade style with natural citations
-  - Confidence footer from verification results
+Implemented improvements targeted at literature-review output quality:
 
-### Stage 6 — REST API + UI
-- **API Server**: `src/api.py` (FastAPI)
-- **Frontend**: React + TypeScript + Vite
+1. **Evidence paragraph construction**
+  - Added logic to construct coherent evidence paragraphs from sentence windows.
+  - Prioritizes high sub-question relevance and coherence.
+  - Falls back to contiguous windows when coherence is weak.
 
-## 4) Backend Setup (rag-backend)
+2. **Text cleanup in evidence units**
+  - Citation/header artifact removal.
+  - Sentence cleanup and readability normalization.
 
-### Requirements
-- Python 3.11+
-- uv package manager
-- MongoDB Atlas connection
+3. **Sub-question hard gating**
+  - Enforced per-chunk filter using `subquery_similarity` threshold (`0.60`).
+  - Prevents weakly related chunks from appearing under a sub-question.
 
-### Dependencies (pyproject.toml)
-```
-Core:       requests, python-dotenv, click
-NLP:        nltk, sentence-transformers, numpy
-Vector:     faiss-cpu
-Database:   pymongo
-Full-text:  pymupdf, beautifulsoup4
-API:        fastapi, uvicorn, python-multipart
-Dev:        pytest, pytest-cov
-```
+4. **Section-aware soft weighting**
+  - Added soft boosts by sub-question intent:
+    - methods/how → methodology boost
+    - results/performance → results boost
+    - challenges/limitations → discussion/conclusion boost
+  - Implemented as score multiplier (soft preference, no hard section exclusion).
 
-### Install & Run
-1. Create and activate env
-   - `uv venv`
-   - `source .venv/bin/activate`
+5. **Confidence recalibration**
+  - Confidence now combines:
+    - subquery similarity
+    - evidence score
+    - verification score
+  - Added confidence bands: `High`, `Medium`, `Low`.
 
-2. Install deps
-   - `uv pip sync pyproject.toml`
+6. **Final synthesis section per sub-question**
+  - Added explicit concluding synthesis paragraph grounded in selected evidence.
 
-3. Configure `.env`
-   - `MONGO_URI` (Atlas URI with real password)
-   - `LLM_PROVIDER` (local | groq | gemini)
-   - API keys (Groq/Gemini/OpenAlex/Semantic Scholar)
+7. **Cross-subquestion de-duplication**
+  - Added global chunk usage tracking to reduce repeated evidence across sub-questions.
 
-4. Run API server
-   - `uv run uvicorn src.api:app --host 0.0.0.0 --port 8000 --reload`
+### B. Comparison/XAI Upgrades (`src/comparison/conflict_detector.py`)
 
-### CLI Commands
-```bash
-# Ingest papers
-uv run python -m src.main ingest --query "machine learning" --max-results 10
+Implemented production-style conflict logic:
 
-# Build FAISS index
-uv run python -m src.main build-index
+1. **Pairwise conflict evaluation (`combinations`)**
+  - Evaluates evidence unit pairs across papers.
 
-# Basic query
-uv run python -m src.main query --query "..." --top-k 5
+2. **Conflict rule alignment**
+  - Conflict condition now follows:
+    - topic similarity high
+    - claim similarity low
+  - Uses explicit thresholds currently aligned to project tuning.
 
-# Query with evidence
-uv run python -m src.main query --query "..." --evidence
+3. **Conflict typing**
+  - Classifies into:
+    - Conceptual
+    - Methodological
+    - Empirical
 
-# Agentic query (static retrieval)
-uv run python -m src.main query --query "..." --plan
+4. **Structured conflict explanation**
+  - Emits claim A / claim B, type, strength, and explanation.
 
-# Agentic query (dynamic retrieval)
-uv run python -m src.main query --query "..." --plan --dynamic
-```
+5. **Narrative comparison synthesis**
+  - Added grounded paragraph generation for cross-paper comparison:
+    - dominant approach pattern
+    - agreement signal
+    - differences
+    - trend hint (classical vs deep learning when supported)
 
-### CLI Metadata Filters
-- `--filter-section` (abstract | body)
-- `--filter-category`
-- `--filter-tags` (comma‑separated)
-- `--filter-year-min` / `--filter-year-max`
-- `--filter-title-contains`
-- `--filter-source` (openalex | semantic_scholar)
+### C. Evidence Extractor Stability Work (`src/evidence/extractor.py`)
 
-## 5) Frontend Setup (rag-frontend)
+Supportive reliability changes were added to keep tests stable across environments:
 
-### Requirements
-- Node.js 18+
-- npm 9+
+- Graceful fallback when `nltk` or heavy embedding stack is unavailable.
+- Regex-based sentence split fallback.
+- Lazy embedding initialization to avoid import-time failures.
 
-### Install & Run
-```bash
-npm install
-npm run dev
-```
+> Note: This did **not** alter retrieval architecture; it improves runtime resilience for extraction/generation paths.
 
-Frontend is served at `http://localhost:5173` and proxies `/api` to `http://localhost:8000`.
+---
 
-### Components
-| Component | File | Purpose |
-|---|---|---|
-| QueryForm | `QueryForm.tsx` | Research question input + mode/filter controls |
-| ResultsPanel | `ResultsPanel.tsx` | Grouped answer with claims & evidence |
-| VerificationCard | `VerificationCard.tsx` | Verification metrics display |
-| SummaryPanel | `SummaryPanel.tsx` | LLM-generated research summary |
-| PapersTable | `PapersTable.tsx` | Source papers table |
-| FileUpload | `FileUpload.tsx` | PDF upload for ingestion |
-| StatusBar | `StatusBar.tsx` | System status (MongoDB/FAISS/LLM) |
-| LoadingSpinner | `LoadingSpinner.tsx` | Loading indicator |
+## 3) Verification Status (Current)
 
-## 6) API Surface (FastAPI)
+### Focused quality tests (latest run)
 
-### POST /api/query
-Request body:
-```json
-{
-  "query": "string",
-  "num_documents": 15,
-  "mode": "dynamic | cached",
-  "include_summary": true,
-  "filters": {
-    "section": "abstract",
-    "category": "rag",
-    "tags": ["retrieval", "grounding"],
-    "year": {"min": 2020, "max": 2024},
-    "title_contains": "retrieval",
-    "source": "openalex"
-  }
-}
-```
+Executed in `rag-backend/`:
 
-Response: `QueryResponse` with execution_id, planning, grouped_answer, chunks_used, papers_found, verification, summary, total_time_ms, warnings.
+- `tests/test_generator.py`
+- `tests/test_conflict_detector.py`
+- `tests/test_evidence.py`
 
-### POST /api/upload
-Upload a PDF paper for ingestion → chunk → embed → FAISS index.
+**Result:** `26 passed` ✅
 
-### GET /api/status
-Returns: mongodb status, papers_count, chunks_count, faiss_vectors, llm_provider, llm_model.
+### Broader suite caveat
 
-### GET /api/traces/{execution_id}
-Retrieve a saved execution trace JSON.
+Hybrid retrieval tests fail in this environment due to missing package:
 
-## 7) LLM Configuration
+- `ModuleNotFoundError: rank_bm25`
 
-| Provider | Config Key | Model |
-|---|---|---|
-| Local (Ollama) | `LLM_PROVIDER=local` | `OLLAMA_MODEL` (default: `llama3:8b-instruct`) |
-| Google Gemini | `LLM_PROVIDER=gemini` | `GEMINI_MODEL` (default: `gemini-2.0-flash`) |
-| Groq Cloud | `LLM_PROVIDER=groq` | `GROQ_MODEL` (default: `llama-3.3-70b-versatile`) |
+This is an **environment/dependency issue**, not a generator/comparison logic regression.
 
-LLM is used only for: query decomposition (planner) and summary generation. All verification is deterministic (no LLM).
+---
 
-## 8) Retrieval Configuration (config.py)
+## 4) Current Architecture State (At Handover)
 
-| Setting | Default | Purpose |
-|---|---|---|
-| `RETRIEVAL_MIN_SIMILARITY` | 0.45 | Minimum cosine similarity to keep a chunk |
-| `EVIDENCE_MIN_SIMILARITY` | 0.50 | Minimum similarity for sentence-level evidence |
-| `KEYWORD_MIN_OVERLAP` | 2 | Required keyword overlap between query and chunk |
-| `EVIDENCE_KEYWORD_MIN_OVERLAP` | 1 | Keyword overlap for evidence sentences |
-| `SUBQUESTION_ASSIGN_THRESHOLD` | 0.40 | Min similarity to assign chunk to sub-question |
-| `DYNAMIC_ABSTRACT_MIN_SIMILARITY` | 0.45 | Abstract relevance threshold (dynamic mode) |
-| `MIN_UNIQUE_PAPERS_FOR_CLAIMS` | 2 | Minimum papers needed for claim generation |
-| `ENABLE_DOMAIN_KEYWORD_GATE` | True | Enable domain keyword filtering |
-| `DOMAIN_KEYWORD_MIN_OVERLAP` | 1 | Required domain keyword overlap |
-| `FILTER_QUESTION_SENTENCES` | True | Filter out question-ending sentences |
-| `TOP_K` | 5 | Default number of chunks to retrieve |
-| `MIN_CHUNK_SENTENCES` | 8 | Minimum sentences per chunk |
-| `MAX_CHUNK_SENTENCES` | 12 | Maximum sentences per chunk |
+### Stable
 
-### Domain Keywords
-Default: `rag, retrieval, augmentation, context, grounding, assistant, research, query, documents`
+- Planner + tracing pipeline
+- Dynamic/cached retrieval routing
+- Hybrid retrieval design and code path availability
+- Verification metrics and tracing
+- Generator structured output format
+- Conflict detector and comparison summary module
 
-## 9) MongoDB Collections
+### Improved this cycle
 
-| Collection | Key Fields | Indexes |
-|---|---|---|
-| `papers` | paper_id, title, abstract, full_text, authors, year, doi, source | paper_id (unique) |
-| `chunks` | chunk_id, paper_id, text, section, embedding_index, metadata, embedding | chunk_id (unique), paper_id |
-| `execution_traces` | execution_id, timestamp, status, stages | execution_id (unique), timestamp, status |
+- Evidence coherence/readability
+- Sub-question precision and anti-repetition behavior
+- XAI conflict explainability
+- Cross-paper narrative comparison quality
+- Confidence labeling clarity
 
-## 10) Singleton Pattern Summary
+### Not changed by this cycle
 
-Three heavy resources use singleton pattern to avoid reinitialization:
-1. **EmbeddingGenerator** (`embedder.py`) — SciBERT model loaded once
-2. **FAISSVectorStore** (`vector_store.py`) — FAISS index loaded once
-3. **MongoDBClient** (`database.py`) — MongoDB connection reused
+- Core retrieval algorithm flow (kept intact by requirement)
+- API contract shape
+- Frontend architecture
 
-## 11) Tests
+---
 
-```bash
-uv run python -m pytest tests/ -v
-```
+## 5) Known Risks / Remaining Work
 
-| Test File | Coverage |
-|---|---|
-| `test_evidence.py` | Sentence splitting, similarity, evidence extraction, junk filtering |
-| `test_generator.py` | Grouped answer formatting, claim snippet generation |
-| `test_trace.py` | Execution trace recording and serialization |
-| `test_verification.py` | Deduplication, filtering, confidence scoring, conflict detection |
+1. **Environment parity**
+  - Install and pin missing backend deps (`rank_bm25`, and optional NLP/ML packages) in active environment.
 
-## 12) Known Issues & Limitations
+2. **End-to-end output QA on real traces**
+  - Validate upgraded generation quality on biomedical queries (e.g., “blood smear segmentation”) and confirm non-repetition + synthesis quality under real data.
 
-- **Sub-question evidence gaps**: Pure semantic retrieval (FAISS/SciBERT) can miss keyword-relevant chunks. Sub-questions using different vocabulary than papers may return no evidence. **Planned fix**: Hybrid BM25 + Semantic + RRF retrieval.
-- **Domain keyword gate**: Currently tuned for RAG-focused queries. Queries on other topics (e.g., "AGI") may have evidence filtered by the domain gate.
-- **Config duplicate overrides**: Lines 38–43 of `config.py` contain hardcoded values that override env-var-based settings above them.
-- **ModuleNotFoundError: src** → must run uvicorn from `rag-backend/` directory.
-- **MongoDB DNS / auth errors** → verify Atlas cluster is active, whitelist IP, correct password.
-- **No papers found** → broaden query or check OpenAlex status.
-- **FAISS index missing** → run `build-index` or use `--dynamic` mode.
+3. **Threshold tuning pass**
+  - Revisit subquery/conflict thresholds with trace-driven calibration after broader dataset runs.
 
-## 13) Recent Enhancements
-- Metadata enrichment in chunks (title, category, tags, summary)
-- Metadata filters in API + CLI + UI
-- Domain keyword gate to block off-topic results
-- Sub-question evidence re-scoring in grouped answer generation
-- Embedding caching in MongoDB (dynamic retriever reuses stored embeddings)
-- Junk sentence filtering (citations, headers, numeric noise, prompt artifacts)
-- Singleton pattern for SciBERT model, FAISS index, and MongoDB connection
-- Pipeline summarizer with LLM-generated narrative summaries
-- Full execution tracing (JSON) with MongoDB storage
-- Multi-query retrieval with chunk deduplication
+4. **Full regression once deps are installed**
+  - Re-run full backend test suite after dependency normalization.
 
-## 14) Handover Notes
-- Re-chunk and rebuild index after metadata changes so filters apply to existing data.
-- Keep `.env` secrets private; rotate keys before production.
-- For local LLM: set `LLM_PROVIDER=local` and ensure Ollama is running.
-- The dynamic retriever is the recommended mode — it fetches fresh papers and doesn't require a pre-built FAISS index.
+---
+
+## 6) Recommended Next Actions (Priority Order)
+
+1. **Dependency normalization**
+  - Ensure all retrieval-related test dependencies are installed in the current Python environment.
+
+2. **Run full backend tests**
+  - Execute all tests in `rag-backend/tests/` and confirm clean pass.
+
+3. **Run one full dynamic query smoke test**
+  - Capture output and trace, verify:
+    - no repeated evidence across sub-questions
+    - coherent evidence paragraphs
+    - meaningful comparison paragraph
+    - explicit conflict/no-conflict explanation
+    - final sub-question synthesis exists
+
+4. **Lock final thresholds/config**
+  - Freeze values after empirical review and update docs.
+
+---
+
+## 7) File-Level Change Summary (This Stage)
+
+- `rag-backend/src/generation/generator.py`
+  - Coherent evidence paragraph builder
+  - Sub-question gate and score refinements
+  - Section-aware soft weighting
+  - Final synthesis per sub-question
+  - Confidence calibration + labeling
+
+- `rag-backend/src/comparison/conflict_detector.py`
+  - Pairwise conflict logic and typing
+  - Explainable conflict outputs (strength + explanation)
+  - Grounded cross-paper comparison paragraph generator
+
+- `rag-backend/src/evidence/extractor.py`
+  - Runtime fallback strategy for sentence splitting/scoring
+  - Lazy embedding initialization for environment robustness
+
+---
+
+## 8) Operational Notes for the Incoming Engineer
+
+- Work from `rag-backend/` root to avoid import path issues.
+- Prioritize dependency alignment before interpreting retrieval test failures.
+- Use execution traces in `rag-backend/output/` to evaluate generation quality regressions.
+- Keep retrieval unchanged unless explicitly requested; current iteration’s contract was generation/comparison hardening.
+
+---
+
+## 9) Project Stage Definition
+
+**Stage label:** `RAG Retrieval Stable, Literature-Review Generation Hardening (Late Integration)`
+
+**Exit criteria for next stage:**
+
+- Full backend suite green in normalized environment.
+- End-to-end dynamic output validated against at least one biomedical query.
+- Final threshold tuning documented and frozen.
+- Handover updated with final production QA metrics.

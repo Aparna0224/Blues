@@ -20,9 +20,12 @@ class AnswerGenerator:
     TOP_CHUNKS_PER_SECTION = 2
     MAX_SECTIONS_PER_PAPER = 3
     PARAGRAPH_MIN_SENTENCES = 3
-    PARAGRAPH_MAX_SENTENCES = 6
-    SUBQUERY_HARD_GATE_THRESHOLD = 0.55
+    PARAGRAPH_MAX_SENTENCES = 5
+    SUBQUERY_HARD_GATE_THRESHOLD = 0.60
     SECTION_PREFERRED_BOOST = 1.2
+    CONFIDENCE_W1 = 0.45
+    CONFIDENCE_W2 = 0.35
+    CONFIDENCE_W3 = 0.20
     
     def __init__(self):
         pass
@@ -76,7 +79,10 @@ class AnswerGenerator:
         s = re.sub(r"\bet\s+al\.?[,]?\s*\(?\d{4}\)?", "", s, flags=re.IGNORECASE)
         s = re.sub(r"\[(\d+|\d+\s*[-,]\s*\d+)\]", "", s)
         s = re.sub(r"\(\s*\d{4}\s*\)", "", s)
+        s = re.sub(r"^(abstract|introduction|background|methods?|methodology|results?|discussion|conclusion)\s*[:\-]\s*", "", s, flags=re.IGNORECASE)
         s = re.sub(r"\s+", " ", s).strip(" -:;,")
+        if s and s[0].islower():
+            s = s[0].upper() + s[1:]
         return s
 
     @staticmethod
@@ -217,6 +223,168 @@ class AnswerGenerator:
                 return canonical.title()
         return "unknown"
 
+    @staticmethod
+    def _lexical_similarity(a: str, b: str) -> float:
+        ta = {
+            t.strip(".,;:()[]{}\"'`").lower()
+            for t in (a or "").split()
+            if len(t.strip(".,;:()[]{}\"'`")) > 2
+        }
+        tb = {
+            t.strip(".,;:()[]{}\"'`").lower()
+            for t in (b or "").split()
+            if len(t.strip(".,;:()[]{}\"'`")) > 2
+        }
+        if not ta or not tb:
+            return 0.0
+        inter = len(ta.intersection(tb))
+        union = len(ta.union(tb))
+        return inter / union if union else 0.0
+
+    def _section_weight(self, sub_question: str, section: str) -> float:
+        sq = (sub_question or "").lower()
+        sec = (section or "unknown").lower()
+        if any(k in sq for k in ["method", "approach", "how"]):
+            return 1.20 if "method" in sec else 1.0
+        if any(k in sq for k in ["result", "performance", "accuracy", "effective"]):
+            return 1.20 if "result" in sec else 1.0
+        if any(k in sq for k in ["challenge", "limitation", "issue", "risk"]):
+            return 1.20 if ("discussion" in sec or "conclusion" in sec) else 1.0
+        return 1.0
+
+    def _best_scored_contiguous_window(
+        self,
+        sentences: List[str],
+        scores: List[float],
+        min_s: int,
+        max_s: int,
+    ) -> Dict[str, Any]:
+        if not sentences:
+            return {"sentences": [], "start": 0, "end": 0, "score": 0.0}
+
+        best = {
+            "sentences": sentences[:min_s],
+            "start": 0,
+            "end": min(len(sentences), min_s),
+            "score": -1.0,
+        }
+        max_len = min(max_s, len(sentences))
+        for win_len in range(min_s, max_len + 1):
+            for start in range(0, len(sentences) - win_len + 1):
+                end = start + win_len
+                window = sentences[start:end]
+                window_scores = scores[start:end]
+                coherence_bonus = 0.1 if self._is_coherent_window(window) else 0.0
+                avg_score = (sum(window_scores) / max(1, len(window_scores))) + coherence_bonus
+                if avg_score > best["score"]:
+                    best = {
+                        "sentences": window,
+                        "start": start,
+                        "end": end,
+                        "score": avg_score,
+                    }
+        return best
+
+    def _build_evidence_paragraph(
+        self,
+        sub_question: str,
+        text: str,
+        evidence_extractor,
+    ) -> Dict[str, Any]:
+        sentences = [self._clean_sentence(s) for s in self._split_sentences(text)]
+        sentences = [s for s in sentences if s and not self._is_noise_sentence(s)]
+        if not sentences:
+            return {
+                "paragraph": "",
+                "start": 1,
+                "end": 1,
+                "best_sentence": "",
+                "best_score": 0.0,
+            }
+
+        scores: List[float] = []
+        for s in sentences:
+            scores.append(self._lexical_similarity(sub_question, s))
+
+        ranked_ids = sorted(range(len(sentences)), key=lambda i: scores[i], reverse=True)
+        top_ids = ranked_ids[: min(len(ranked_ids), self.PARAGRAPH_MAX_SENTENCES)]
+        coherent_ids: List[int] = []
+        for idx in top_ids:
+            if len(coherent_ids) >= self.PARAGRAPH_MAX_SENTENCES:
+                break
+            candidate = coherent_ids + [idx]
+            candidate_sents = [sentences[i] for i in sorted(candidate)]
+            if len(candidate_sents) <= 1 or self._is_coherent_window(candidate_sents):
+                coherent_ids.append(idx)
+
+        coherent_ids = sorted(coherent_ids)
+        contiguous = bool(coherent_ids) and (coherent_ids[-1] - coherent_ids[0] + 1 == len(coherent_ids))
+        coherent_ok = len(coherent_ids) >= self.PARAGRAPH_MIN_SENTENCES and self._is_coherent_window([sentences[i] for i in coherent_ids])
+
+        if contiguous or coherent_ok:
+            selected = coherent_ids
+            if len(selected) < self.PARAGRAPH_MIN_SENTENCES:
+                window = self._best_scored_contiguous_window(
+                    sentences,
+                    scores,
+                    self.PARAGRAPH_MIN_SENTENCES,
+                    self.PARAGRAPH_MAX_SENTENCES,
+                )
+                selected = list(range(window["start"], window["end"]))
+        else:
+            window = self._best_scored_contiguous_window(
+                sentences,
+                scores,
+                self.PARAGRAPH_MIN_SENTENCES,
+                self.PARAGRAPH_MAX_SENTENCES,
+            )
+            selected = list(range(window["start"], window["end"]))
+
+        if not selected:
+            return {
+                "paragraph": "",
+                "start": 1,
+                "end": 1,
+                "best_sentence": "",
+                "best_score": 0.0,
+            }
+
+        paragraph = " ".join(sentences[i] for i in selected).strip()
+        best_idx = max(selected, key=lambda i: scores[i])
+        return {
+            "paragraph": paragraph,
+            "start": selected[0] + 1,
+            "end": selected[-1] + 1,
+            "best_sentence": sentences[best_idx],
+            "best_score": scores[best_idx],
+        }
+
+    def _build_subquestion_conclusion(self, sub_question: str, units: List[Dict[str, Any]]) -> str:
+        if not units:
+            return "The available evidence is insufficient to draw a reliable conclusion for this sub-question."
+
+        ranked = sorted(
+            units,
+            key=lambda u: (u.get("final_score", 0.0), u.get("confidence", 0.0)),
+            reverse=True,
+        )
+        top = ranked[:2]
+        claim_fragments = []
+        for u in top:
+            claim = (u.get("claim") or u.get("text") or "").strip()
+            if claim:
+                claim_fragments.append(claim.rstrip(".") + ".")
+
+        base = " ".join(claim_fragments)
+        if not base:
+            base = "The evidence points to a consistent pattern across the selected papers."
+
+        confidence_label = self._confidence_band(sum(u.get("confidence", 0.0) for u in top) / max(1, len(top)))
+        return (
+            f"Based on the selected evidence, {base} "
+            f"Overall support for this sub-question is {confidence_label.lower()} confidence."
+        )
+
     def _build_evidence_unit(
         self,
         sub_question: str,
@@ -234,59 +402,52 @@ class AnswerGenerator:
         evidence_sentence = chunk.get("evidence_sentence", "")
         evidence_score = float(chunk.get("evidence_score", 0.0) or 0.0)
         similarity_score = float(chunk.get("similarity_score", 0.0) or 0.0)
-        sentence_start = None
-        sentence_end = None
-
-        if evidence_extractor:
-            evidence = evidence_extractor.select_best_sentence(sub_question, text)
-            evidence_sentence = evidence.get("best_sentence", evidence_sentence)
-            evidence_score = float(evidence.get("best_score", evidence_score) or 0.0)
-            if evidence.get("below_threshold", False):
-                return None
-
-        sentences = self._split_sentences(text)
-        if not sentences:
-            return None
-
-        target_idx = 0
-        ev = " ".join((evidence_sentence or "").split()).strip().lower()
-        if ev:
-            for idx, sent in enumerate(sentences):
-                s = " ".join(sent.split()).strip().lower()
-                if ev in s or s in ev:
-                    target_idx = idx
-                    break
-
-        snippet, sentence_start, sentence_end = self._build_clean_paragraph(
-            text,
-            evidence_sentence,
-            min_sentences=self.PARAGRAPH_MIN_SENTENCES,
-            max_sentences=self.PARAGRAPH_MAX_SENTENCES,
-        )
+        paragraph_info = self._build_evidence_paragraph(sub_question, text, evidence_extractor)
+        snippet = paragraph_info.get("paragraph", "")
+        sentence_start = int(paragraph_info.get("start", 1))
+        sentence_end = int(paragraph_info.get("end", 1))
         if not snippet:
             return None
+
+        evidence_sentence = paragraph_info.get("best_sentence", evidence_sentence)
+        evidence_score = max(evidence_score, float(paragraph_info.get("best_score", 0.0) or 0.0))
+
+        verification_score = float(
+            chunk.get("verification_score", chunk.get("confidence_score", similarity_score)) or similarity_score
+        )
+
+        metadata = chunk.get("metadata") or {}
+        section = self._normalize_section(metadata.get("section") or chunk.get("section", "unknown"))
+        section_weight = self._section_weight(sub_question, section)
 
         confidence = max(
             0.0,
             min(
                 1.0,
-                (0.5 * evidence_score)
-                + (0.3 * similarity_score)
-                + (0.2 * subquery_similarity),
+                (self.CONFIDENCE_W1 * subquery_similarity)
+                + (self.CONFIDENCE_W2 * evidence_score)
+                + (self.CONFIDENCE_W3 * verification_score),
             ),
         )
-
-        metadata = chunk.get("metadata") or {}
-        section = metadata.get("section") or chunk.get("section", "unknown")
+        final_score = max(
+            0.0,
+            min(
+                1.0,
+                ((0.5 * similarity_score) + (0.3 * evidence_score) + (0.2 * subquery_similarity)) * section_weight,
+            ),
+        )
 
         return {
             "paper_id": chunk.get("paper_id", ""),
             "paper_title": chunk.get("paper_title", "Unknown"),
             "paper_year": chunk.get("paper_year", "N/A"),
-            "section": self._normalize_section(section),
+            "section": section,
             "location_start": sentence_start,
             "location_end": sentence_end,
             "relevance": similarity_score,
+            "evidence_score": evidence_score,
+            "verification_score": verification_score,
+            "final_score": final_score,
             "subquery_similarity": subquery_similarity,
             "confidence": confidence,
             "confidence_band": self._confidence_band(confidence),
@@ -445,10 +606,20 @@ class AnswerGenerator:
             evidence_extractor = None
         
         # Generate answer for each sub-question
+        globally_used_chunk_ids: set[str] = set()
         for i, sub_q in enumerate(sub_questions, 1):
             output += f"🔹 Sub-question: {sub_q}\n\n"
             
             assigned_chunks = chunk_assignments.get(sub_q, [])
+
+            # Enforce non-repetition across sub-questions.
+            unique_for_subq: List[Dict[str, Any]] = []
+            for chunk in assigned_chunks:
+                cid = str(chunk.get("chunk_id", ""))
+                if not cid or cid in globally_used_chunk_ids:
+                    continue
+                unique_for_subq.append(chunk)
+            assigned_chunks = unique_for_subq
             
             if not assigned_chunks:
                 output += "  ⚠ No specific evidence found for this sub-question.\n\n"
@@ -474,6 +645,9 @@ class AnswerGenerator:
                 )
                 if unit:
                     units.append(unit)
+                    cid = str(chunk.get("chunk_id", ""))
+                    if cid:
+                        globally_used_chunk_ids.add(cid)
 
             if not units:
                 output += "⚠ No sufficiently relevant evidence found for this sub-question.\n\n"
@@ -523,7 +697,7 @@ class AnswerGenerator:
                 for section_name, section_units in ordered_sections:
                     sorted_units = sorted(
                         section_units,
-                        key=lambda u: (u.get("confidence", 0), u.get("relevance", 0)),
+                        key=lambda u: (u.get("final_score", 0), u.get("confidence", 0), u.get("relevance", 0)),
                         reverse=True,
                     )[: self.TOP_CHUNKS_PER_SECTION]
 
@@ -532,7 +706,8 @@ class AnswerGenerator:
                         output += f"Location: sentences {unit['location_start']}–{unit['location_end']}\n"
                         output += (
                             f"Relevance: {unit['relevance']:.2f} | "
-                            f"Confidence: {unit['confidence']:.2f}\n\n"
+                            f"SubQ Similarity: {unit['subquery_similarity']:.2f} | "
+                            f"Confidence: {unit['confidence']:.2f} ({unit['confidence_band']})\n\n"
                         )
                         output += "Text:\n"
                         output += f"\"{unit['text']}\"\n\n"
@@ -550,35 +725,40 @@ class AnswerGenerator:
                 a = first["a"]
                 b = first["b"]
                 output += (
-                    f"- Claim A ({a['paper_title']} - {a['section']}): \"{(a.get('claim') or '')[:180]}\"\n"
+                    f"* Claim A ({a['paper_title']} - {a['section']}): \"{(a.get('claim') or '')[:180]}\"\n"
                 )
                 output += (
-                    f"- Claim B ({b['paper_title']} - {b['section']}): \"{(b.get('claim') or '')[:180]}\"\n\n"
+                    f"* Claim B ({b['paper_title']} - {b['section']}): \"{(b.get('claim') or '')[:180]}\"\n\n"
                 )
                 output += f"Conflict Type: {first['type']}\n"
-                output += f"Conflict Strength: {first['strength']:.2f}\n\n"
+                output += f"Strength: {first['strength']:.2f}\n\n"
                 output += f"Explanation: {first.get('explanation','')[:320]}\n\n"
             else:
-                output += "No significant conflicts detected.\n"
-                output += (
-                    "Reason: top cross-paper claims are directionally aligned or do not share enough "
-                    "overlapping concepts to indicate a substantive contradiction.\n\n"
-                )
+                output += "No significant conflicts detected because cross-paper claims are either aligned in direction or not sufficiently contradictory within shared topics.\n\n"
 
             summary = ConflictDetector.comparison_summary(units, conflicts)
             grounded = ConflictDetector.grounded_comparison_statements(units)
+            comparison = ConflictDetector.generate_literature_comparison(units)
 
             output += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             output += "📊 Comparison Summary\n"
             output += f"- Supporting evidence clusters: {summary['supporting_clusters']}\n"
             output += f"- Conflicting clusters: {summary['conflicting_clusters']}\n"
             output += f"- Consensus level: {summary['consensus_level']}\n"
+            output += "\nCross-paper synthesis:\n"
+            output += f"{comparison['paragraph']}\n"
+            if comparison.get("support_indices"):
+                refs = ", ".join([f"u{idx+1}" for idx in comparison["support_indices"]])
+                output += f"Supports: {refs}\n"
             if grounded:
                 output += "- Grounded synthesis statements:\n"
                 for st in grounded[:3]:
                     refs = [f"u{idx+1}" for idx in st.get("support_indices", [])[:5]]
                     ref_text = ", ".join(refs) if refs else "none"
                     output += f"  • {st.get('text', '').strip()} (supports: {ref_text})\n"
+
+            output += "\n🧩 Final Synthesis\n"
+            output += f"{self._build_subquestion_conclusion(sub_q, units)}\n"
             
             output += "\n"
         
@@ -689,7 +869,7 @@ class AnswerGenerator:
             if best_score >= min_threshold:
                 sq = sub_questions[best_j]
                 if len(assignments[sq]) < self.MAX_CHUNKS_PER_SUBQ and cid not in assigned_ids[sq]:
-                    assignments[sq].append(chunk)
+                    assignments[sq].append({**chunk, "subquery_similarity": best_score})
                     assigned_ids[sq].add(cid)
                     chunk_assigned_to[i] = best_j
 
@@ -717,7 +897,7 @@ class AnswerGenerator:
                     if sc >= threshold and sc >= min_threshold:
                         sq = sub_questions[j]
                         if len(assignments[sq]) < self.MAX_CHUNKS_PER_SUBQ and cid not in assigned_ids[sq]:
-                            assignments[sq].append(chunk)
+                            assignments[sq].append({**chunk, "subquery_similarity": sc})
                             assigned_ids[sq].add(cid)
 
         # ── 4. Optional back-fill guarantee ──────────────────────
@@ -740,7 +920,7 @@ class AnswerGenerator:
                     continue
                 cid = chunks[idx].get("chunk_id", id(chunks[idx]))
                 if cid not in assigned_ids[sq]:
-                    assignments[sq].append(chunks[idx])
+                    assignments[sq].append({**chunks[idx], "subquery_similarity": score_matrix[idx][j]})
                     assigned_ids[sq].add(cid)
 
         return assignments
