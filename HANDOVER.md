@@ -1,223 +1,268 @@
-# Blues RAG Project — Handover (Current Stage)
+# Blues — Full Project Handover (Backend + Frontend)
 
-## 1) Executive Snapshot
-
-Blues is now in the **“literature-review quality hardening” stage**.
-
-The backend has moved beyond basic evidence aggregation and now includes:
-
-- **Hybrid retrieval architecture in-place** (BM25 + semantic + RRF), already integrated in retrieval paths.
-- **Post-fusion soft filtering** strategy (keep recall, then penalize low-quality evidence).
-- **Structured evidence-unit generation** with section/location/confidence metadata.
-- **Cross-paper conflict detection + comparison synthesis** for explainability (XAI).
-- **Sub-question-level relevance control** to reduce repeated evidence and improve topical precision.
-
-Current effort has focused on **generator/comparison quality** while preserving retrieval logic.
+Prepared for: External product/content review (Feedough)
+Project: **Blues**
+Type: **Agentic RAG Research Assistant**
 
 ---
 
-## 2) What Was Completed in This Stage
+## 1) Product Overview
 
-### A. Generator Layer Upgrades (`src/generation/generator.py`)
+Blues is an explainable, agentic research assistant that answers user queries using retrieved scientific evidence.
 
-Implemented improvements targeted at literature-review output quality:
+It combines:
 
-1. **Evidence paragraph construction**
-  - Added logic to construct coherent evidence paragraphs from sentence windows.
-  - Prioritizes high sub-question relevance and coherence.
-  - Falls back to contiguous windows when coherence is weak.
+- Planning (query decomposition into sub-questions)
+- Hybrid retrieval (BM25 + semantic + RRF)
+- Sentence-level evidence extraction
+- Structured generation (sub-question → paper → evidence)
+- Verification and conflict detection (XAI)
+- Export-ready output (summary + evidence + references)
 
-2. **Text cleanup in evidence units**
-  - Citation/header artifact removal.
-  - Sentence cleanup and readability normalization.
-
-3. **Sub-question hard gating**
-  - Enforced per-chunk filter using `subquery_similarity` threshold (`0.60`).
-  - Prevents weakly related chunks from appearing under a sub-question.
-
-4. **Section-aware soft weighting**
-  - Added soft boosts by sub-question intent:
-    - methods/how → methodology boost
-    - results/performance → results boost
-    - challenges/limitations → discussion/conclusion boost
-  - Implemented as score multiplier (soft preference, no hard section exclusion).
-
-5. **Confidence recalibration**
-  - Confidence now combines:
-    - subquery similarity
-    - evidence score
-    - verification score
-  - Added confidence bands: `High`, `Medium`, `Low`.
-
-6. **Final synthesis section per sub-question**
-  - Added explicit concluding synthesis paragraph grounded in selected evidence.
-
-7. **Cross-subquestion de-duplication**
-  - Added global chunk usage tracking to reduce repeated evidence across sub-questions.
-
-### B. Comparison/XAI Upgrades (`src/comparison/conflict_detector.py`)
-
-Implemented production-style conflict logic:
-
-1. **Pairwise conflict evaluation (`combinations`)**
-  - Evaluates evidence unit pairs across papers.
-
-2. **Conflict rule alignment**
-  - Conflict condition now follows:
-    - topic similarity high
-    - claim similarity low
-  - Uses explicit thresholds currently aligned to project tuning.
-
-3. **Conflict typing**
-  - Classifies into:
-    - Conceptual
-    - Methodological
-    - Empirical
-
-4. **Structured conflict explanation**
-  - Emits claim A / claim B, type, strength, and explanation.
-
-5. **Narrative comparison synthesis**
-  - Added grounded paragraph generation for cross-paper comparison:
-    - dominant approach pattern
-    - agreement signal
-    - differences
-    - trend hint (classical vs deep learning when supported)
-
-### C. Evidence Extractor Stability Work (`src/evidence/extractor.py`)
-
-Supportive reliability changes were added to keep tests stable across environments:
-
-- Graceful fallback when `nltk` or heavy embedding stack is unavailable.
-- Regex-based sentence split fallback.
-- Lazy embedding initialization to avoid import-time failures.
-
-> Note: This did **not** alter retrieval architecture; it improves runtime resilience for extraction/generation paths.
+Core promise: **grounded answers with traceable evidence**, not free-form hallucinated output.
 
 ---
 
-## 3) Verification Status (Current)
+## 2) Repository Structure
 
-### Focused quality tests (latest run)
-
-Executed in `rag-backend/`:
-
-- `tests/test_generator.py`
-- `tests/test_conflict_detector.py`
-- `tests/test_evidence.py`
-
-**Result:** `26 passed` ✅
-
-### Broader suite caveat
-
-Hybrid retrieval tests fail in this environment due to missing package:
-
-- `ModuleNotFoundError: rank_bm25`
-
-This is an **environment/dependency issue**, not a generator/comparison logic regression.
-
----
-
-## 4) Current Architecture State (At Handover)
-
-### Stable
-
-- Planner + tracing pipeline
-- Dynamic/cached retrieval routing
-- Hybrid retrieval design and code path availability
-- Verification metrics and tracing
-- Generator structured output format
-- Conflict detector and comparison summary module
-
-### Improved this cycle
-
-- Evidence coherence/readability
-- Sub-question precision and anti-repetition behavior
-- XAI conflict explainability
-- Cross-paper narrative comparison quality
-- Confidence labeling clarity
-
-### Not changed by this cycle
-
-- Core retrieval algorithm flow (kept intact by requirement)
-- API contract shape
-- Frontend architecture
+```text
+Blues/
+├── HANDOVER.md
+├── rag-backend/
+│   ├── src/
+│   │   ├── agents/               # Planner + verification agents
+│   │   ├── chunking/             # Text chunking logic
+│   │   ├── comparison/           # Conflict detection and comparison synthesis
+│   │   ├── embeddings/           # Embedding model wrapper (SciBERT)
+│   │   ├── evidence/             # Sentence-level evidence extraction
+│   │   ├── export/               # Report generation/export helpers
+│   │   ├── generation/           # Main answer generator + summarizer
+│   │   ├── ingestion/            # Paper ingestion/fulltext collection
+│   │   ├── llm/                  # LLM provider abstraction
+│   │   ├── retrieval/            # Hybrid retrieval components
+│   │   ├── trace/                # Trace writer/reader
+│   │   ├── api.py                # FastAPI routes
+│   │   ├── main.py               # CLI entrypoint
+│   │   └── config.py             # Runtime configuration
+│   ├── tests/
+│   └── pyproject.toml
+└── rag-frontend/
+    ├── src/
+    │   ├── components/           # UI components
+    │   ├── services/             # API client
+    │   ├── types/                # TS contracts
+    │   └── App.tsx
+    └── package.json
+```
 
 ---
 
-## 5) Known Risks / Remaining Work
+## 3) Backend Architecture (Detailed)
 
-1. **Environment parity**
-  - Install and pin missing backend deps (`rank_bm25`, and optional NLP/ML packages) in active environment.
+### 3.1 Request lifecycle
 
-2. **End-to-end output QA on real traces**
-  - Validate upgraded generation quality on biomedical queries (e.g., “blood smear segmentation”) and confirm non-repetition + synthesis quality under real data.
+1. User sends query to API.
+2. Planner decomposes query into sub-questions and search intents.
+3. Hybrid retriever fetches candidate chunks.
+4. Evidence extractor selects sentence-level support.
+5. Generator builds structured response by sub-question.
+6. Comparison/conflict layer adds XAI reasoning.
+7. Verification calculates confidence and quality metrics.
+8. Trace is persisted for reproducibility.
 
-3. **Threshold tuning pass**
-  - Revisit subquery/conflict thresholds with trace-driven calibration after broader dataset runs.
+### 3.2 Major backend modules
 
-4. **Full regression once deps are installed**
-  - Re-run full backend test suite after dependency normalization.
+- `src/api.py`
+  - FastAPI endpoints
+  - orchestrates query, status, trace, and export paths
+
+- `src/agents/planner.py`
+  - Converts one broad query into sub-questions + search queries
+
+- `src/retrieval/`
+  - Hybrid retrieval stack (BM25 + semantic + RRF)
+  - Supports cached and dynamic modes
+  - **Note**: retrieval logic is stable and intentionally separated from generation
+
+- `src/evidence/extractor.py`
+  - Sentence tokenization
+  - similarity scoring for evidence sentence selection
+  - cleaning/robust fallback behavior for dependency variance
+
+- `src/generation/generator.py`
+  - maps chunks to sub-questions
+  - applies per-subquestion filtering
+  - fallback reassignment when a sub-question would otherwise be empty
+  - builds structured, human-readable evidence blocks
+  - emits confidence labels and synthesis sections
+
+- `src/comparison/conflict_detector.py`
+  - cross-paper pairwise conflict detection
+  - conceptual/methodological/empirical conflict typing
+  - comparison summary synthesis grounded in evidence units
+
+- `src/generation/summarizer.py`
+  - final narrative summary generation (evidence-grounded)
+
+- `src/export/report_builder.py`
+  - report construction for downloadable formats (Markdown/PDF workflow support)
+
+- `src/trace/tracer.py`
+  - captures full execution trace (planning/retrieval/filtering/evidence/verification)
+
+### 3.3 Data quality and explainability
+
+Backend enforces:
+
+- sub-question-aware assignment and scoring
+- no empty `sub_question` assignment in mapped units
+- conflict analysis with rationale
+- confidence bands (`High` / `Medium` / `Low`)
+- paper-level traceability (`paper_id`, `paper_title`, location metadata)
 
 ---
 
-## 6) Recommended Next Actions (Priority Order)
+## 4) Frontend Architecture (Detailed)
 
-1. **Dependency normalization**
-  - Ensure all retrieval-related test dependencies are installed in the current Python environment.
+### 4.1 Stack
 
-2. **Run full backend tests**
-  - Execute all tests in `rag-backend/tests/` and confirm clean pass.
+- React + TypeScript + Vite
+- Component-driven rendering of analysis outputs
 
-3. **Run one full dynamic query smoke test**
-  - Capture output and trace, verify:
-    - no repeated evidence across sub-questions
-    - coherent evidence paragraphs
-    - meaningful comparison paragraph
-    - explicit conflict/no-conflict explanation
-    - final sub-question synthesis exists
+### 4.2 UI flow
 
-4. **Lock final thresholds/config**
-  - Freeze values after empirical review and update docs.
+1. User enters query and mode/options.
+2. Frontend calls backend query API.
+3. Results view displays:
+   - sub-question sections
+   - grouped paper evidence
+   - confidence/verification indicators
+   - comparison/conflict outputs
+   - global summary
+4. User can inspect papers, evidence blocks, and status details.
 
----
+### 4.3 Key UI components
 
-## 7) File-Level Change Summary (This Stage)
-
-- `rag-backend/src/generation/generator.py`
-  - Coherent evidence paragraph builder
-  - Sub-question gate and score refinements
-  - Section-aware soft weighting
-  - Final synthesis per sub-question
-  - Confidence calibration + labeling
-
-- `rag-backend/src/comparison/conflict_detector.py`
-  - Pairwise conflict logic and typing
-  - Explainable conflict outputs (strength + explanation)
-  - Grounded cross-paper comparison paragraph generator
-
-- `rag-backend/src/evidence/extractor.py`
-  - Runtime fallback strategy for sentence splitting/scoring
-  - Lazy embedding initialization for environment robustness
+- `components/QueryForm.tsx` — input and query execution controls
+- `components/ResultsPanel.tsx` — core structured answer rendering
+- `components/VerificationCard.tsx` — confidence + quality metrics
+- `components/SummaryPanel.tsx` — final summary block
+- `components/PapersTable.tsx` — evidence source list
+- `components/StatusBar.tsx` — backend/system status
+- `components/FileUpload.tsx` — ingestion/upload utility
 
 ---
 
-## 8) Operational Notes for the Incoming Engineer
+## 5) Current Capabilities
 
-- Work from `rag-backend/` root to avoid import path issues.
-- Prioritize dependency alignment before interpreting retrieval test failures.
-- Use execution traces in `rag-backend/output/` to evaluate generation quality regressions.
-- Keep retrieval unchanged unless explicitly requested; current iteration’s contract was generation/comparison hardening.
+### Implemented and working
+
+- Hybrid retrieval path integrated in backend
+- Structured grouped generation output
+- Cross-paper comparison and conflict detection (XAI)
+- Trace generation for debugging/audit
+- Focused quality tests passing for generator/evidence/conflict modules
+
+### Stability checks from latest run context
+
+- Focused test set passed:
+  - `tests/test_generator.py`
+  - `tests/test_evidence.py`
+  - `tests/test_conflict_detector.py`
 
 ---
 
-## 9) Project Stage Definition
+## 6) API Summary (External Consumer View)
 
-**Stage label:** `RAG Retrieval Stable, Literature-Review Generation Hardening (Late Integration)`
+> Input contracts are stable; retrieval internals are abstracted behind API.
 
-**Exit criteria for next stage:**
+Common endpoint categories:
 
-- Full backend suite green in normalized environment.
-- End-to-end dynamic output validated against at least one biomedical query.
-- Final threshold tuning documented and frozen.
-- Handover updated with final production QA metrics.
+- Query execution (agentic answer generation)
+- Health/status
+- Trace retrieval by execution id
+- Report download/export endpoints (format-driven)
+
+The frontend uses `src/services/api.ts` as the single API integration layer.
+
+---
+
+## 7) How to Run Locally
+
+### Backend (`rag-backend`)
+
+1. Create env and install deps
+2. Configure `.env`
+3. Run API server
+
+Known working server command in current context:
+
+```bash
+cd /home/aparna/Documents/project/Blues/rag-backend
+uv run uvicorn src.api:app --host 0.0.0.0 --port 8000 --reload
+```
+
+### Frontend (`rag-frontend`)
+
+```bash
+cd /home/aparna/Documents/project/Blues/rag-frontend
+npm install
+npm run dev
+```
+
+---
+
+## 8) Testing & Quality
+
+### Focused backend tests (recently green)
+
+```bash
+cd /home/aparna/Documents/project/Blues/rag-backend
+pytest tests/test_generator.py tests/test_evidence.py tests/test_conflict_detector.py -q
+```
+
+### Full-suite note
+
+If full hybrid retrieval tests fail with `rank_bm25` import errors, treat as environment dependency setup issue and install missing packages before final regression sign-off.
+
+---
+
+## 9) Known Limitations / Risks
+
+1. Environment-dependent package availability can affect full suite runs.
+2. Query-domain drift may require threshold tuning for best evidence assignment quality.
+3. Summary quality depends on evidence quality and source diversity of retrieved chunks.
+
+---
+
+## 10) Handover for Feedough (What to Emphasize)
+
+If this project is being reviewed for product showcase/content publication, highlight:
+
+- **Differentiator:** evidence-grounded agentic RAG with explainability, not just generic chat.
+- **Trust features:** sentence-level citations, conflict analysis, confidence labels, execution traces.
+- **User value:** structured, research-style outputs with paper-level references.
+- **Product readiness:** API-backed architecture + frontend UI + export/report capability.
+
+Suggested one-line pitch:
+
+> “Blues is an explainable research assistant that decomposes complex queries, retrieves and verifies evidence across papers, and returns structured literature-style insights with traceable confidence.”
+
+---
+
+## 11) Suggested Next Milestones
+
+1. Finalize full export UX (PDF/Markdown download controls) in frontend if pending.
+2. Run full backend + frontend QA regression in a normalized environment.
+3. Add lightweight E2E tests for query → render → export workflow.
+4. Prepare public demo script with 2–3 domain queries (e.g., biomedical + AI systems).
+
+---
+
+## 12) Contacts / Ownership (To Fill Before Sharing)
+
+- Backend owner:
+- Frontend owner:
+- Product/demo owner:
+- Deployment environment:
+- Last verified date:
