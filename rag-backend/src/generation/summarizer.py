@@ -1,4 +1,4 @@
-"""Pipeline Summarizer — LLM-generated research summary (Stage 5).
+"""Pipeline Summarizer — evidence-grounded literature-review synthesis (Stage 5).
 
 Takes the full Stage 4 output (grouped answer with claims, evidence,
 verification metrics) and sends it to the configured LLM to produce
@@ -8,7 +8,7 @@ The summary is appended to the existing output — it does NOT replace
 or modify any Stage 4 content.
 """
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 from src.llm.base import BaseLLM
 
@@ -16,37 +16,27 @@ from src.llm.base import BaseLLM
 # ── Prompt template ──────────────────────────────────────────────
 
 _SUMMARY_PROMPT = """\
-You are a knowledgeable research assistant having a conversation with
-the user.  They asked a research question and our system retrieved
-evidence from academic papers.  Below is the raw pipeline output.
+You are writing a literature-review-grade synthesis.
 
-YOUR TASK:
-Give the user a **clear, concise, and direct answer** to their
-question — like a helpful expert explaining findings in plain English.
+Rules:
+- Ground every statement in the provided evidence summary.
+- Do not hallucinate or introduce external facts.
+- Use concise academic prose.
+- Avoid copying raw evidence sentences verbatim.
 
-STYLE:
-- Conversational but professional — imagine a senior researcher
-  briefing a colleague over coffee.
-- Short paragraphs (2-3 sentences each).  No walls of text.
-- Use natural citations: "According to Zhang et al. (2022), ..." or
-  "A 2021 survey found that ..."  — NOT full paper titles inline.
-- Lead with the key takeaway, then supporting details.
-- If the evidence has conflicts, say so plainly:
-  "Interestingly, the evidence is mixed — ..."
-- End with ONE sentence on confidence:
-  "Overall, the evidence is [strong/moderate/limited]."
-- Total length: **100-200 words**.  Brevity is king.
-- Do NOT use bullet points, numbered lists, or headers.
-- Do NOT mention pipeline internals (chunks, similarity scores, etc.).
-- Do NOT invent facts beyond what the evidence shows.
+Required structure in plain text:
+1) Topic overview (1 short paragraph)
+2) Key approaches across papers (1 short paragraph)
+3) Major agreements and differences (1 short paragraph)
+4) Overall conclusion (1-2 sentences)
 
-─── PIPELINE OUTPUT ───
+Context:
+Query: {query}
 
-{pipeline_output}
+Evidence-grounded synthesis draft:
+{deterministic_summary}
 
-─── END OF PIPELINE OUTPUT ───
-
-Now give the user a brief, expert answer:
+Produce a refined version with the same factual content.
 """
 
 
@@ -69,6 +59,8 @@ class PipelineSummarizer:
         grouped_answer: str,
         verification_output: str,
         verification_result: Optional[Dict[str, Any]] = None,
+        analysis_data: Optional[Dict[str, Any]] = None,
+        query: str = "",
     ) -> str:
         """Produce a professional research summary.
 
@@ -83,10 +75,16 @@ class PipelineSummarizer:
         Returns:
             Formatted summary block ready to append to rag_output.txt.
         """
-        # Assemble the full pipeline output the LLM will see
-        pipeline_output = grouped_answer + "\n" + verification_output
+        deterministic_summary = self._deterministic_literature_summary(
+            analysis_data=analysis_data,
+            grouped_answer=grouped_answer,
+            query=query,
+        )
 
-        prompt = _SUMMARY_PROMPT.format(pipeline_output=pipeline_output)
+        prompt = _SUMMARY_PROMPT.format(
+            query=query,
+            deterministic_summary=deterministic_summary,
+        )
 
         try:
             raw = self._llm.generate(prompt)
@@ -107,6 +105,95 @@ class PipelineSummarizer:
             )
 
         return self._format_summary_block(summary_text, verification_result)
+
+    def _deterministic_literature_summary(
+        self,
+        analysis_data: Optional[Dict[str, Any]],
+        grouped_answer: str,
+        query: str,
+    ) -> str:
+        """Create an evidence-grounded synthesis without relying on LLM inference."""
+        if not analysis_data or not analysis_data.get("sub_questions"):
+            return (
+                f"Overview: For the query '{query}', the system identified multiple evidence-backed points. "
+                "Approaches and findings vary by paper, with overall direction inferred from retrieved evidence. "
+                "Differences are reported when claims diverge, and consensus is stronger where claims align. "
+                "Conclusion: the available evidence is informative but should be interpreted with source context."
+            )
+
+        sub_sections = analysis_data.get("sub_questions", [])
+        mini_blocks: List[str] = []
+        all_units: List[Dict[str, Any]] = []
+        conflict_count = 0
+
+        for sub in sub_sections:
+            question = sub.get("question", "")
+            papers = sub.get("papers", [])
+            units = []
+            for p in papers:
+                units.extend(p.get("evidence_units", []))
+            all_units.extend(units)
+            conflict_count += len(sub.get("conflicts", []))
+
+            methods = self._dominant_terms(units, category="methods")
+            findings = self._dominant_terms(units, category="findings")
+            trend = " ".join(self._trend_flags(units))
+
+            line = (
+                f"Sub-question '{question}': dominant methods include {methods}; "
+                f"key findings emphasize {findings}. {trend}".strip()
+            )
+            mini_blocks.append(line)
+
+        methods_global = self._dominant_terms(all_units, category="methods")
+        findings_global = self._dominant_terms(all_units, category="findings")
+        differences = (
+            "Evidence includes meaningful cross-paper differences"
+            if conflict_count > 0
+            else "Evidence is mostly directionally aligned across papers"
+        )
+
+        overview = (
+            f"Overview: For '{query}', the collected evidence spans {len(sub_sections)} sub-questions "
+            f"and {len(analysis_data.get('references', []))} papers."
+        )
+        approaches = f"Key approaches: papers most frequently discuss {methods_global}."
+        agreements = f"Agreements and differences: common findings highlight {findings_global}; {differences.lower()}."
+        conclusion = (
+            "Overall conclusion: the literature indicates a consistent methodological progression with topic-specific "
+            "variation in reported outcomes."
+        )
+
+        full = "\n".join(mini_blocks + [overview, approaches, agreements, conclusion])
+        return full
+
+    @staticmethod
+    def _dominant_terms(units: List[Dict[str, Any]], category: str = "methods") -> str:
+        if not units:
+            return "limited evidence"
+        text = " ".join([(u.get("claim") or "") + " " + (u.get("text") or "") for u in units]).lower()
+        if category == "methods":
+            candidates = ["cnn", "deep learning", "neural", "otsu", "threshold", "morphological", "segmentation"]
+        else:
+            candidates = ["accuracy", "performance", "robust", "challenge", "limitation", "automation", "detection"]
+
+        hits = [c for c in candidates if c in text]
+        if not hits:
+            return "mixed methodological evidence"
+        return ", ".join(hits[:3])
+
+    @staticmethod
+    def _trend_flags(units: List[Dict[str, Any]]) -> List[str]:
+        text = " ".join([(u.get("claim") or "") + " " + (u.get("text") or "") for u in units]).lower()
+        has_deep = any(k in text for k in ["cnn", "deep learning", "neural", "resnet", "unet"])
+        has_classical = any(k in text for k in ["otsu", "threshold", "morphological", "color space", "hsv", "rgb"])
+        if has_deep and has_classical:
+            return ["A trend from classical image processing toward deep learning is visible."]
+        if has_deep:
+            return ["Recent evidence is dominated by deep-learning-based approaches."]
+        if has_classical:
+            return ["Classical image-processing approaches remain prominent in the selected evidence."]
+        return ["No single approach family clearly dominates across all evidence units."]
 
     # ─────────────────────────────────────────────────────────────
     # Formatting

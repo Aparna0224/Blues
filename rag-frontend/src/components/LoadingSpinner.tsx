@@ -1,49 +1,37 @@
-import { useState, useEffect } from 'react';
-
-const STAGES = [
-  { label: 'Planning sub-questions…', icon: '🧠' },
-  { label: 'Retrieving relevant papers…', icon: '🔍' },
-  { label: 'Extracting evidence…', icon: '📄' },
-  { label: 'Generating grouped answer…', icon: '✍️' },
-  { label: 'Verifying claims…', icon: '🛡️' },
-];
-
 export default function LoadingSpinner() {
-  const [stage, setStage] = useState(0);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setStage((s) => (s + 1) % STAGES.length);
-    }, 4000);
-    return () => clearInterval(interval);
-  }, []);
-
-  const current = STAGES[stage];
-
   return (
-    <div className="flex flex-col items-center justify-center py-16 animate-fade-in">
-      {/* Spinner ring */}
-      <div className="relative w-16 h-16 mb-5">
-        <div className="absolute inset-0 rounded-full border-[3px] border-slate-100" />
-        <div className="absolute inset-0 rounded-full border-[3px] border-transparent border-t-blue-600 animate-spin" />
-        <span className="absolute inset-0 flex items-center justify-center text-xl">
-          {current.icon}
-        </span>
+    <div className="animate-fade-in" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 16, padding: '48px 24px' }}>
+      {/* Rotating ring */}
+      <div style={{ position: 'relative', width: 52, height: 52 }}>
+        <div style={{
+          width: '100%', height: '100%', borderRadius: '50%',
+          border: '3px solid rgba(94,234,212,0.12)',
+          borderTop: '3px solid var(--teal)',
+          animation: 'spin 0.9s linear infinite',
+        }} />
+        <div style={{
+          position: 'absolute', inset: 8, borderRadius: '50%',
+          border: '2px solid rgba(129,140,248,0.12)',
+          borderBottom: '2px solid var(--indigo)',
+          animation: 'spin 1.4s linear infinite reverse',
+        }} />
       </div>
-      <p className="text-sm font-semibold text-slate-700 mb-1">{current.label}</p>
-      <p className="text-xs text-slate-400">Pipeline is running — this may take 1–2 minutes</p>
 
-      {/* Stage indicators */}
-      <div className="flex gap-1.5 mt-5">
-        {STAGES.map((_, i) => (
-          <div
-            key={i}
-            className={`w-1.5 h-1.5 rounded-full transition-all duration-300 ${
-              i === stage ? 'bg-blue-600 scale-125' : i < stage ? 'bg-blue-300' : 'bg-slate-200'
-            }`}
-          />
-        ))}
+      {/* Dots */}
+      <div style={{ display: 'flex', gap: 6 }}>
+        <span className="loading-dot" />
+        <span className="loading-dot" />
+        <span className="loading-dot" />
       </div>
+
+      <div style={{ textAlign: 'center' }}>
+        <p style={{ margin: 0, fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>Running Pipeline</p>
+        <p style={{ margin: '4px 0 0', fontSize: 12, color: 'var(--text-muted)' }}>
+          Planning → Retrieval → Verification → Synthesis
+        </p>
+      </div>
+
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   );
 }

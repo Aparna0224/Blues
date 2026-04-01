@@ -1,184 +1,114 @@
 import { ShieldCheck, ShieldAlert, ShieldX, AlertTriangle, ChevronDown } from 'lucide-react';
 import type { VerificationResult } from '../types';
 
-interface Props {
-  verification: VerificationResult;
-}
+interface Props { verification: VerificationResult; }
 
-function getConfidenceLabel(score: number): string {
+function getLabel(score: number) {
   if (score >= 0.75) return 'HIGH';
   if (score >= 0.50) return 'MEDIUM';
   return 'LOW';
 }
 
-function getConfidenceMeta(label: string) {
+function getMeta(label: string) {
   switch (label) {
-    case 'HIGH':
-      return {
-        icon: ShieldCheck,
-        color: 'text-emerald-700',
-        bg: 'from-emerald-50 to-green-50',
-        border: 'border-emerald-200',
-        bar: 'from-emerald-500 to-green-400',
-        badge: 'bg-emerald-100 text-emerald-800',
-      };
-    case 'MEDIUM':
-      return {
-        icon: ShieldAlert,
-        color: 'text-amber-700',
-        bg: 'from-amber-50 to-yellow-50',
-        border: 'border-amber-200',
-        bar: 'from-amber-500 to-yellow-400',
-        badge: 'bg-amber-100 text-amber-800',
-      };
-    default:
-      return {
-        icon: ShieldX,
-        color: 'text-red-700',
-        bg: 'from-red-50 to-rose-50',
-        border: 'border-red-200',
-        bar: 'from-red-500 to-rose-400',
-        badge: 'bg-red-100 text-red-800',
-      };
+    case 'HIGH': return { Icon: ShieldCheck, color: '#34d399', bg: 'rgba(52,211,153,0.08)', border: 'rgba(52,211,153,0.2)', bar: 'linear-gradient(90deg,#34d399,#6ee7b7)' };
+    case 'MEDIUM': return { Icon: ShieldAlert, color: '#fbbf24', bg: 'rgba(251,191,36,0.08)', border: 'rgba(251,191,36,0.2)', bar: 'linear-gradient(90deg,#fbbf24,#fde68a)' };
+    default: return { Icon: ShieldX, color: '#f87171', bg: 'rgba(248,113,113,0.08)', border: 'rgba(248,113,113,0.2)', bar: 'linear-gradient(90deg,#f87171,#fca5a5)' };
   }
 }
 
 export default function VerificationCard({ verification }: Props) {
   const v = verification;
   const m = v.metrics;
-  const confidenceLabel = getConfidenceLabel(v.confidence_score);
-  const meta = getConfidenceMeta(confidenceLabel);
-  const Icon = meta.icon;
+  const label = getLabel(v.confidence_score);
+  const meta = getMeta(label);
+  const Icon = meta.Icon;
   const pct = Math.round(v.confidence_score * 100);
   const conflicts = m.conflicts_detected ?? [];
 
   return (
-    <div className={`rounded-2xl border ${meta.border} bg-gradient-to-br ${meta.bg} overflow-hidden shadow-sm animate-fade-in`}>
+    <div className="animate-fade-in" style={{ borderRadius: 13, border: `1px solid ${meta.border}`, background: meta.bg, overflow: 'hidden' }}>
       {/* Header */}
-      <div className="px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-2.5">
-          <Icon size={20} className={meta.color} />
-          <h3 className="text-sm font-semibold text-slate-800">Verification Report</h3>
-          <span className="text-[10px] text-slate-400 font-medium uppercase tracking-wider">Stage 4</span>
+      <div style={{ padding: '14px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <Icon size={18} style={{ color: meta.color }} />
+          <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>Verification Report</h3>
+          <span style={{ fontSize: 9, color: 'var(--text-muted)', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.08em' }}>Stage 4</span>
         </div>
-        <span className={`px-3 py-1 rounded-full text-sm font-bold ${meta.badge}`}>
-          {pct}% {confidenceLabel}
+        <span style={{ padding: '4px 12px', borderRadius: 16, fontSize: 13, fontWeight: 700, color: meta.color, background: `${meta.border}55`, border: `1px solid ${meta.border}` }}>
+          {pct}% {label}
         </span>
       </div>
 
       {/* Progress bar */}
-      <div className="px-6 pb-5">
-        <div className="w-full h-2.5 bg-white/70 rounded-full overflow-hidden shadow-inner">
-          <div
-            className={`h-full rounded-full bg-gradient-to-r ${meta.bar} transition-all duration-1000 ease-out`}
-            style={{ width: `${pct}%` }}
-          />
+      <div style={{ paddingInline: 20, paddingBottom: 16 }}>
+        <div style={{ height: 6, borderRadius: 4, background: 'rgba(255,255,255,0.06)', overflow: 'hidden' }}>
+          <div style={{ height: '100%', borderRadius: 4, background: meta.bar, width: `${pct}%`, transition: 'width 1s ease-out' }} />
         </div>
       </div>
 
-      {/* Metric grid */}
-      <div className="px-6 pb-5 grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <MetricBox label="Avg. Similarity" value={m.avg_similarity} />
-        <MetricBox label="Source Diversity" value={m.normalized_source_diversity} suffix={`${m.source_diversity} papers`} />
-        <MetricBox label="Evidence Density" value={m.evidence_density} />
-        <MetricBox label="Claims Used" value={v.audit.claims_used_for_scoring} isInt />
+      {/* Metrics grid */}
+      <div style={{ paddingInline: 20, paddingBottom: 16, display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 8 }}>
+        {[
+          { label: 'Avg. Similarity', val: (m.avg_similarity * 100).toFixed(1) + '%' },
+          { label: 'Source Diversity', val: (m.normalized_source_diversity * 100).toFixed(1) + '%' },
+          { label: 'Evidence Density', val: (m.evidence_density * 100).toFixed(1) + '%' },
+          { label: 'Claims Used', val: String(v.audit.claims_used_for_scoring) },
+        ].map(({ label: l, val }) => (
+          <div key={l} style={{ padding: '10px 14px', borderRadius: 10, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)', textAlign: 'center' }}>
+            <p style={{ margin: 0, fontSize: 9, fontWeight: 500, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 4 }}>{l}</p>
+            <p style={{ margin: 0, fontSize: 20, fontWeight: 700, color: 'var(--text-primary)' }}>{val}</p>
+          </div>
+        ))}
       </div>
 
       {/* Warnings */}
       {v.warnings.length > 0 && (
-        <div className="mx-6 mb-4 space-y-2">
+        <div style={{ marginInline: 20, marginBottom: 12, display: 'flex', flexDirection: 'column', gap: 6 }}>
           {v.warnings.map((w, i) => (
-            <div key={i} className="flex items-center gap-2 bg-amber-100/80 rounded-lg px-3 py-2 text-sm text-amber-800">
-              <AlertTriangle size={14} className="text-amber-500 shrink-0" />
-              {w}
+            <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 12px', borderRadius: 8, background: 'rgba(251,191,36,0.1)', fontSize: 12, color: '#fbbf24' }}>
+              <AlertTriangle size={12} style={{ flexShrink: 0 }} />{w}
             </div>
           ))}
         </div>
       )}
 
-      {/* Conflict warning */}
+      {/* Conflicts */}
       {conflicts.length > 0 && (
-        <div className="mx-6 mb-4 flex items-start gap-2.5 bg-amber-100/80 rounded-xl p-4">
-          <AlertTriangle size={16} className="text-amber-600 mt-0.5 shrink-0" />
-          <div className="text-sm text-amber-800">
-            <p className="font-semibold mb-1">Conflicting evidence detected</p>
-            <ul className="space-y-0.5 text-amber-700">
-              {conflicts.map((d, i) => (
-                <li key={i} className="flex items-start gap-1.5">
-                  <span className="text-amber-400 mt-1">•</span>
-                  <span>{d}</span>
-                </li>
-              ))}
+        <div style={{ marginInline: 20, marginBottom: 12, padding: '12px 14px', borderRadius: 10, border: '1px solid rgba(251,191,36,0.2)', background: 'rgba(251,191,36,0.07)', display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+          <AlertTriangle size={14} style={{ color: '#fbbf24', flexShrink: 0, marginTop: 2 }} />
+          <div>
+            <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#fbbf24' }}>Conflicting evidence</p>
+            <ul style={{ margin: 0, paddingLeft: 14 }}>
+              {conflicts.map((d, i) => <li key={i} style={{ fontSize: 12, color: '#fde68a', marginBottom: 2 }}>{d}</li>)}
             </ul>
           </div>
         </div>
       )}
 
-      {/* Audit details */}
-      {v.audit && <AuditDetails audit={v.audit} />}
-    </div>
-  );
-}
-
-/* ── Metric box ──────────────────────────────────────────────── */
-
-function MetricBox({
-  label,
-  value,
-  isInt = false,
-  suffix,
-}: {
-  label: string;
-  value: number;
-  isInt?: boolean;
-  suffix?: string;
-}) {
-  const display = isInt ? String(value) : (value * 100).toFixed(1) + '%';
-  return (
-    <div className="bg-white/60 backdrop-blur-sm rounded-xl p-3.5 text-center border border-white/80">
-      <p className="text-[10px] font-medium text-slate-500 uppercase tracking-wider mb-1">{label}</p>
-      <p className="text-xl font-bold text-slate-800">{display}</p>
-      {suffix && <p className="text-[10px] text-slate-400 mt-0.5">{suffix}</p>}
-    </div>
-  );
-}
-
-/* ── Audit details ───────────────────────────────────────────── */
-
-function AuditDetails({ audit }: { audit: Props['verification']['audit'] }) {
-  return (
-    <details className="group border-t border-white/60">
-      <summary className="px-6 py-3 flex items-center gap-1.5 text-xs font-medium text-slate-500 cursor-pointer select-none hover:text-slate-700">
-        <ChevronDown size={13} className="transition-transform group-open:rotate-180" />
-        Filtering audit log
-      </summary>
-      <div className="px-6 pb-4 grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs text-slate-600">
-        <AuditItem label="Total received" value={audit.total_claims_received} />
-        <AuditItem label="After dedup" value={audit.claims_after_dedup} />
-        <AuditItem label="After relevance" value={audit.claims_after_relevance_filter} />
-        <AuditItem label="Above similarity" value={audit.claims_above_similarity_threshold} />
-        <AuditItem label="Used for scoring" value={audit.claims_used_for_scoring} />
-        <AuditItem label="Rejected" value={audit.claims_rejected} highlight />
-      </div>
-    </details>
-  );
-}
-
-function AuditItem({
-  label,
-  value,
-  highlight = false,
-}: {
-  label: string;
-  value: number | string;
-  highlight?: boolean;
-}) {
-  return (
-    <div className="bg-white/50 rounded-lg px-3 py-2">
-      <p className="text-[10px] text-slate-400 mb-0.5">{label}</p>
-      <p className={`text-sm font-semibold ${highlight ? 'text-red-600' : 'text-slate-700'}`}>
-        {value}
-      </p>
+      {/* Audit log */}
+      {v.audit && (
+        <details className="group" style={{ borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+          <summary style={{ padding: '10px 20px', display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-muted)', cursor: 'pointer', listStyle: 'none' }}>
+            <ChevronDown size={12} /> Filtering audit log
+          </summary>
+          <div style={{ padding: '4px 20px 16px', display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 6 }}>
+            {[
+              ['Total received', v.audit.total_claims_received],
+              ['After dedup', v.audit.claims_after_dedup],
+              ['After relevance', v.audit.claims_after_relevance_filter],
+              ['Above threshold', v.audit.claims_above_similarity_threshold],
+              ['Used for scoring', v.audit.claims_used_for_scoring],
+              ['Rejected', v.audit.claims_rejected],
+            ].map(([l, val], i) => (
+              <div key={String(l)} style={{ padding: '8px 10px', borderRadius: 8, background: 'rgba(255,255,255,0.04)' }}>
+                <p style={{ margin: 0, fontSize: 9, color: 'var(--text-muted)', marginBottom: 2 }}>{l}</p>
+                <p style={{ margin: 0, fontSize: 14, fontWeight: 700, color: i === 5 ? '#f87171' : 'var(--text-primary)' }}>{val}</p>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
     </div>
   );
 }

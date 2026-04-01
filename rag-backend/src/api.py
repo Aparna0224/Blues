@@ -17,8 +17,10 @@ import uuid
 import tempfile
 import traceback
 from typing import Optional
+from datetime import datetime, timezone
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
+from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -41,6 +43,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# In-memory cache for downloadable report payloads keyed by execution_id.
+REPORT_CACHE: dict[str, dict] = {}
 
 
 # ─── Request / Response models ───────────────────────────────────
@@ -233,6 +238,7 @@ async def run_query(req: QueryRequest):
     try:
         generator = AnswerGenerator()
         grouped_answer = generator.generate_grouped_answer(plan, chunks)
+        analysis_data = generator.get_last_analysis() if hasattr(generator, "get_last_analysis") else {}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Answer generation failed: {e}")
 
@@ -281,6 +287,8 @@ async def run_query(req: QueryRequest):
                 grouped_answer=grouped_answer,
                 verification_output=verification_output,
                 verification_result=verification_result,
+                analysis_data=analysis_data,
+                query=req.query,
             )
         except Exception as e:
             warnings.append(f"Summary generation failed: {e}")
@@ -326,6 +334,25 @@ async def run_query(req: QueryRequest):
 
     # ── Save trace ───────────────────────────────────────────────
     execution_id = tracer.execution_id
+
+    if analysis_data:
+        analysis_data["query"] = req.query
+        analysis_data["generated_at"] = datetime.now(timezone.utc).isoformat()
+        analysis_data["final_summary"] = summary_text or ""
+        # Enrich references from papers_found when available (DOI/link mandatory in export).
+        paper_lookup = {p.get("paper_id", ""): p for p in papers_found}
+        for ref in analysis_data.get("references", []):
+            pid = ref.get("paper_id", "")
+            doc = paper_lookup.get(pid, {})
+            if doc:
+                ref["title"] = doc.get("title", ref.get("title", "Unknown"))
+                ref["year"] = doc.get("year", ref.get("year", "N/A"))
+                ref["doi"] = ref.get("doi") or doc.get("doi", "")
+                if not ref.get("link") and doc.get("doi"):
+                    ref["link"] = f"https://doi.org/{doc.get('doi')}"
+
+        REPORT_CACHE[execution_id] = analysis_data
+
     try:
         tracer.save_trace(directory="output")
     except Exception:
@@ -356,6 +383,38 @@ async def run_query(req: QueryRequest):
         summary=summary_text,
         total_time_ms=total_ms,
         warnings=warnings,
+    )
+
+
+@app.get("/api/download-report")
+async def download_report(
+    format: str = Query(default="pdf", pattern="^(pdf|md)$"),
+    execution_id: str = Query(..., min_length=6),
+):
+    """Download a comprehensive report in PDF or Markdown format for a completed execution."""
+    from src.export.report_builder import ReportBuilder
+
+    analysis = REPORT_CACHE.get(execution_id)
+    if not analysis:
+        raise HTTPException(
+            status_code=404,
+            detail="Report data not found for execution_id. Re-run query and try download again.",
+        )
+
+    builder = ReportBuilder(system_name="Blues")
+    if format == "md":
+        body = builder.build_markdown(analysis).encode("utf-8")
+        return Response(
+            content=body,
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": f"attachment; filename=blues_report_{execution_id}.md"},
+        )
+
+    body = builder.build_pdf(analysis)
+    return Response(
+        content=body,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename=blues_report_{execution_id}.pdf"},
     )
 
 

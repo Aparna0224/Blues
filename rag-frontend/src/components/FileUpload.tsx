@@ -40,49 +40,38 @@ export default function FileUpload() {
     if (file) handleFile(file);
   };
 
-  const dismiss = () => {
-    setResult(null);
-    setError('');
-  };
+  const dismiss = () => { setResult(null); setError(''); };
 
   return (
     <div>
-      {/* Drop zone */}
       <div
-        onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+        onDragOver={e => { e.preventDefault(); setDragging(true); }}
         onDragLeave={() => setDragging(false)}
         onDrop={onDrop}
         onClick={() => inputRef.current?.click()}
-        className={`
-          relative border-2 border-dashed rounded-xl p-5 text-center cursor-pointer transition-all
-          ${dragging
-            ? 'border-blue-400 bg-blue-50/50 scale-[1.01]'
-            : 'border-slate-200 hover:border-blue-300 hover:bg-blue-50/20'
-          }
-        `}
+        style={{
+          border: `1.5px dashed ${dragging ? 'var(--teal)' : 'rgba(255,255,255,0.12)'}`,
+          borderRadius: 10, padding: '14px 20px', cursor: 'pointer', textAlign: 'center',
+          background: dragging ? 'rgba(94,234,212,0.05)' : 'rgba(255,255,255,0.02)',
+          transition: 'all 0.15s',
+        }}
       >
-        <input
-          ref={inputRef}
-          type="file"
-          accept=".pdf"
-          className="hidden"
-          onChange={onSelect}
-        />
+        <input ref={inputRef} type="file" accept=".pdf" style={{ display: 'none' }} onChange={onSelect} />
         {uploading ? (
-          <div className="flex items-center justify-center gap-2 py-1">
-            <Loader2 size={18} className="text-blue-500 animate-spin" />
-            <span className="text-sm font-medium text-blue-600">Processing PDF…</span>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+            <Loader2 size={15} style={{ color: 'var(--teal)', animation: 'spin 1s linear infinite' }} />
+            <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--teal)' }}>Processing PDF…</span>
           </div>
         ) : (
-          <div className="flex items-center justify-center gap-3">
-            <div className="w-9 h-9 rounded-lg bg-slate-100 flex items-center justify-center">
-              <Upload size={16} className="text-slate-500" />
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
+            <div style={{ width: 32, height: 32, borderRadius: 8, background: 'rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Upload size={14} style={{ color: 'var(--text-muted)' }} />
             </div>
-            <div className="text-left">
-              <p className="text-sm font-medium text-slate-700">
-                Upload a paper <span className="text-slate-400 font-normal">(optional)</span>
+            <div style={{ textAlign: 'left' }}>
+              <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: 'var(--text-secondary)' }}>
+                Upload a paper <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(optional)</span>
               </p>
-              <p className="text-[11px] text-slate-400">
+              <p style={{ margin: 0, fontSize: 10, color: 'var(--text-muted)' }}>
                 Drop a PDF or click — it will be chunked, embedded, and indexed
               </p>
             </div>
@@ -90,32 +79,26 @@ export default function FileUpload() {
         )}
       </div>
 
-      {/* Success */}
       {result && (
-        <div className="mt-3 flex items-center gap-3 bg-emerald-50 border border-emerald-200 rounded-lg px-4 py-3 animate-fade-in">
-          <CheckCircle size={16} className="text-emerald-600 shrink-0" />
-          <div className="flex-1 text-sm">
-            <span className="font-medium text-emerald-800">{result.title}</span>
-            <span className="text-emerald-600 ml-1">
-              — {result.chunks_created} chunks, {result.vectors_added} vectors indexed
-            </span>
+        <div className="animate-fade-in" style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 9, border: '1px solid rgba(52,211,153,0.25)', background: 'rgba(52,211,153,0.08)' }}>
+          <CheckCircle size={14} style={{ color: '#34d399', flexShrink: 0 }} />
+          <div style={{ flex: 1, fontSize: 12 }}>
+            <span style={{ fontWeight: 600, color: '#34d399' }}>{result.title}</span>
+            <span style={{ color: '#6ee7b7', marginLeft: 6 }}>— {result.chunks_created} chunks, {result.vectors_added} vectors</span>
           </div>
-          <button onClick={dismiss} className="text-emerald-400 hover:text-emerald-600 p-0.5">
-            <X size={14} />
-          </button>
+          <button onClick={dismiss} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#34d399' }}><X size={13} /></button>
         </div>
       )}
 
-      {/* Error */}
       {error && (
-        <div className="mt-3 flex items-center gap-2 bg-red-50 border border-red-200 rounded-lg px-4 py-3 animate-fade-in">
-          <FileText size={14} className="text-red-500 shrink-0" />
-          <span className="text-sm text-red-700 flex-1">{error}</span>
-          <button onClick={dismiss} className="text-red-400 hover:text-red-600 p-0.5">
-            <X size={14} />
-          </button>
+        <div className="animate-fade-in" style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 9, border: '1px solid rgba(248,113,113,0.25)', background: 'rgba(248,113,113,0.08)' }}>
+          <FileText size={13} style={{ color: '#f87171', flexShrink: 0 }} />
+          <span style={{ flex: 1, fontSize: 12, color: '#fca5a5' }}>{error}</span>
+          <button onClick={dismiss} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#f87171' }}><X size={13} /></button>
         </div>
       )}
+
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   );
 }

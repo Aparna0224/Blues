@@ -1,18 +1,35 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
 @import "tailwindcss";
 
 :root {
-  --color-primary: #2563eb;
-  --color-primary-dark: #1d4ed8;
-  --color-success: #16a34a;
-  --color-warning: #d97706;
-  --color-danger: #dc2626;
-  --color-bg: #f8fafc;
-  --color-surface: #ffffff;
-  --color-surface-alt: #f1f5f9;
-  --color-border: #e2e8f0;
-  --color-text: #0f172a;
-  --color-text-secondary: #475569;
-  --color-text-muted: #94a3b8;
+  /* Dark theme tokens */
+  --bg-primary: #0b0f1e;
+  --bg-secondary: #111827;
+  --bg-card: #161d30;
+  --bg-card-hover: #1c2540;
+  --bg-sidebar: #0d1120;
+  --border: rgba(255, 255, 255, 0.07);
+  --border-accent: rgba(94, 234, 212, 0.25);
+
+  /* Accent colours */
+  --teal: #5eead4;
+  --teal-dim: #2dd4bf;
+  --cyan: #38bdf8;
+  --indigo: #818cf8;
+  --purple: #a78bfa;
+
+  /* Text */
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --text-muted: #475569;
+
+  /* Status */
+  --success: #34d399;
+  --warning: #fbbf24;
+  --danger: #f87171;
+
+  /* Sidebar */
+  --sidebar-width: 220px;
 }
 
 * {
@@ -21,71 +38,129 @@
 
 body {
   margin: 0;
-  font-family:
-    'Inter',
-    -apple-system,
-    BlinkMacSystemFont,
-    'Segoe UI',
-    Roboto,
-    sans-serif;
-  background-color: var(--color-bg);
-  color: var(--color-text);
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Custom scrollbar */
+/* ── Scrollbar ─────────────────────────────────────── */
 ::-webkit-scrollbar {
-  width: 6px;
+  width: 5px;
+  height: 5px;
 }
+
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
 ::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
-  border-radius: 3px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
+  background: #1e293b;
+  border-radius: 4px;
 }
 
-/* Markdown-like prose inside results */
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
+
+/* ── Glass card ────────────────────────────────────── */
+.glass-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  backdrop-filter: blur(12px);
+}
+
+.glass-card-hover:hover {
+  background: var(--bg-card-hover);
+  border-color: var(--border-accent);
+}
+
+/* ── Gradient text ─────────────────────────────────── */
+.gradient-text {
+  background: linear-gradient(135deg, var(--teal), var(--indigo));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ── Prose ─────────────────────────────────────────── */
 .prose h3 {
-  font-size: 1.125rem;
+  font-size: 1.05rem;
   font-weight: 600;
   margin-top: 1.25rem;
   margin-bottom: 0.5rem;
+  color: var(--text-primary);
 }
+
 .prose p {
   margin-bottom: 0.75rem;
   line-height: 1.7;
+  color: var(--text-secondary);
 }
+
 .prose ul,
 .prose ol {
   padding-left: 1.5rem;
   margin-bottom: 0.75rem;
 }
+
 .prose li {
   margin-bottom: 0.25rem;
   line-height: 1.6;
-}
-.prose strong {
-  font-weight: 600;
+  color: var(--text-secondary);
 }
 
-/* Animations */
+.prose strong {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* ── Animations ────────────────────────────────────── */
 @keyframes fade-in {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .animate-fade-in {
-  animation: fade-in 0.3s ease-out;
+  animation: fade-in 0.35s ease-out;
+}
+
+@keyframes slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.animate-slide-right {
+  animation: slide-in-right 0.4s ease-out;
 }
 
 @keyframes pulse-dot {
-  0%, 80%, 100% { transform: scale(0); }
-  40% { transform: scale(1); }
+
+  0%,
+  80%,
+  100% {
+    transform: scale(0);
+  }
+
+  40% {
+    transform: scale(1);
+  }
 }
 
 .loading-dot {
@@ -93,9 +168,77 @@ body {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background-color: var(--color-primary);
+  background: var(--teal);
   animation: pulse-dot 1.4s infinite ease-in-out both;
 }
-.loading-dot:nth-child(1) { animation-delay: -0.32s; }
-.loading-dot:nth-child(2) { animation-delay: -0.16s; }
-.loading-dot:nth-child(3) { animation-delay: 0s; }
+
+.loading-dot:nth-child(1) {
+  animation-delay: -0.32s;
+}
+
+.loading-dot:nth-child(2) {
+  animation-delay: -0.16s;
+}
+
+.loading-dot:nth-child(3) {
+  animation-delay: 0s;
+}
+
+/* Neural map heatmap */
+@keyframes heatmap-pulse {
+
+  0%,
+  100% {
+    opacity: 0.6;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+.heatmap-cell {
+  border-radius: 3px;
+  animation: heatmap-pulse 2s ease-in-out infinite;
+}
+
+/* Glow ring for active nav */
+.nav-active-glow {
+  box-shadow: 0 0 0 1px rgba(94, 234, 212, 0.3), 0 2px 8px rgba(94, 234, 212, 0.1);
+}
+
+/* Teal accent bar on cards */
+.accent-bar {
+  height: 2px;
+  background: linear-gradient(90deg, var(--teal), var(--indigo), var(--purple));
+}
+
+/* Badge colours */
+.badge-high {
+  background: rgba(52, 211, 153, 0.12);
+  color: #34d399;
+  border: 1px solid rgba(52, 211, 153, 0.2);
+}
+
+.badge-medium {
+  background: rgba(251, 191, 36, 0.12);
+  color: #fbbf24;
+  border: 1px solid rgba(251, 191, 36, 0.2);
+}
+
+.badge-low {
+  background: rgba(248, 113, 113, 0.12);
+  color: #f87171;
+  border: 1px solid rgba(248, 113, 113, 0.2);
+}
+
+.badge-neutral {
+  background: rgba(148, 163, 184, 0.1);
+  color: #94a3b8;
+  border: 1px solid rgba(148, 163, 184, 0.15);
+}
+
+/* Input dark */
+input[type=range] {
+  accent-color: var(--teal);
+}

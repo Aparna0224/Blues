@@ -63,3 +63,24 @@ export async function getTrace(executionId: string): Promise<unknown> {
   const { data } = await client.get(`/traces/${executionId}`);
   return data;
 }
+
+/** Download comprehensive report as PDF or Markdown */
+export async function downloadReport(executionId: string, format: 'pdf' | 'md'): Promise<void> {
+  const res = await client.get(`/download-report`, {
+    params: { execution_id: executionId, format },
+    responseType: 'blob',
+    timeout: 120_000,
+  });
+
+  const blob = new Blob([res.data], {
+    type: format === 'pdf' ? 'application/pdf' : 'text/markdown;charset=utf-8',
+  });
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `blues_report_${executionId}.${format === 'pdf' ? 'pdf' : 'md'}`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  window.URL.revokeObjectURL(url);
+}

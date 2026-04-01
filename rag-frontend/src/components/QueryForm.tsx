@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Search, Settings2, Zap, Database, Sparkles, ArrowRight, Filter } from 'lucide-react';
+import { Search, Settings2, Zap, Database, Sparkles, Filter } from 'lucide-react';
 import type { QueryRequest, QueryFilters } from '../types';
 
 interface Props {
@@ -19,7 +19,7 @@ export default function QueryForm({ onSubmit, loading }: Props) {
   const [filterYearMin, setFilterYearMin] = useState('');
   const [filterYearMax, setFilterYearMax] = useState('');
   const [filterTitleContains, setFilterTitleContains] = useState('');
-  const [filterSource, setFilterSource] = useState('');
+  const [filterSource, _setFilterSource] = useState('');
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -28,10 +28,7 @@ export default function QueryForm({ onSubmit, loading }: Props) {
     if (filterSection) filters.section = filterSection;
     if (filterCategory) filters.category = filterCategory;
     if (filterTags.trim()) {
-      filters.tags = filterTags
-        .split(',')
-        .map((t) => t.trim())
-        .filter(Boolean);
+      filters.tags = filterTags.split(',').map(t => t.trim()).filter(Boolean);
     }
     if (filterYearMin || filterYearMax) {
       filters.year = {};
@@ -50,246 +47,163 @@ export default function QueryForm({ onSubmit, loading }: Props) {
     });
   };
 
+  const inputBase: React.CSSProperties = {
+    width: '100%', padding: '8px 12px', borderRadius: 8,
+    border: '1px solid rgba(255,255,255,0.1)', background: 'rgba(255,255,255,0.05)',
+    color: 'var(--text-primary)', fontSize: 13, outline: 'none',
+  };
+
   return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      {/* Main search input */}
-      <div className="relative group">
-        <Search
-          size={18}
-          className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-blue-500 transition-colors"
-        />
-        <input
-          type="text"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="What are the main approaches to explainable AI in medical diagnosis?"
-          disabled={loading}
-          className="w-full pl-11 pr-32 py-4 rounded-xl border border-slate-200
-                     bg-slate-50/50 text-sm text-slate-900 placeholder:text-slate-400
-                     focus:outline-none focus:ring-2 focus:ring-blue-500/40 focus:border-blue-400
-                     focus:bg-white disabled:opacity-50 disabled:cursor-not-allowed
-                     transition-all"
-        />
+    <form onSubmit={handleSubmit}>
+      {/* ── Main search row ── */}
+      <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+        <div style={{ flex: 1, position: 'relative' }}>
+          <Search size={15} style={{ position: 'absolute', left: 14, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)', pointerEvents: 'none' }} />
+          <input
+            type="text"
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="Ask a research question…"
+            disabled={loading}
+            style={{
+              ...inputBase,
+              paddingLeft: 40, paddingRight: 16,
+              paddingTop: 13, paddingBottom: 13,
+              fontSize: 14,
+              border: '1px solid rgba(255,255,255,0.09)',
+              background: 'rgba(255,255,255,0.04)',
+              transition: 'border-color 0.15s',
+            }}
+          />
+        </div>
+
+        {/* Dynamic mode toggle pill */}
+        <button
+          type="button"
+          onClick={() => setMode(m => m === 'dynamic' ? 'cached' : 'dynamic')}
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6, padding: '10px 14px',
+            borderRadius: 9, border: '1px solid rgba(94,234,212,0.25)',
+            background: mode === 'dynamic' ? 'rgba(94,234,212,0.1)' : 'rgba(255,255,255,0.05)',
+            color: mode === 'dynamic' ? 'var(--teal)' : 'var(--text-muted)',
+            cursor: 'pointer', fontSize: 12, fontWeight: 500, whiteSpace: 'nowrap', transition: 'all 0.15s',
+          }}
+        >
+          {mode === 'dynamic' ? <Zap size={12} /> : <Database size={12} />}
+          {mode === 'dynamic' ? 'Dynamic Mode' : 'Cached Mode'}
+        </button>
+
+        {/* Run Analysis button */}
         <button
           type="submit"
           disabled={!query.trim() || loading}
-          className="absolute right-2 top-1/2 -translate-y-1/2
-                     inline-flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-lg
-                     bg-gradient-to-r from-blue-600 to-indigo-600 text-white
-                     hover:from-blue-700 hover:to-indigo-700 active:from-blue-800 active:to-indigo-800
-                     disabled:opacity-40 disabled:cursor-not-allowed
-                     transition-all shadow-md shadow-blue-600/20 hover:shadow-lg hover:shadow-blue-600/30"
+          style={{
+            display: 'flex', alignItems: 'center', gap: 7, padding: '11px 20px',
+            borderRadius: 9, border: 'none', cursor: (!query.trim() || loading) ? 'not-allowed' : 'pointer',
+            background: (!query.trim() || loading) ? 'rgba(94,234,212,0.25)' : 'linear-gradient(135deg, #5eead4, #38bdf8)',
+            color: '#0b0f1e', fontWeight: 700, fontSize: 13, whiteSpace: 'nowrap', transition: 'all 0.15s',
+            opacity: (!query.trim() || loading) ? 0.5 : 1,
+          }}
         >
           {loading ? (
             <>
-              <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              <span style={{ width: 12, height: 12, border: '2px solid rgba(11,15,30,0.3)', borderTop: '2px solid #0b0f1e', borderRadius: '50%', display: 'inline-block', animation: 'spin 0.7s linear infinite' }} />
               Running…
             </>
           ) : (
-            <>
-              Search
-              <ArrowRight size={14} />
-            </>
+            <>Run Analysis</>
           )}
         </button>
-      </div>
 
-      {/* Options toggle */}
-      <div className="flex items-center">
+        {/* Advanced toggle */}
         <button
           type="button"
           onClick={() => setShowAdvanced(!showAdvanced)}
-          className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg
-                     transition-all ${
-                       showAdvanced
-                         ? 'bg-blue-50 text-blue-700 border border-blue-200'
-                         : 'text-slate-500 hover:text-slate-700 hover:bg-slate-100 border border-transparent'
-                     }`}
+          style={{
+            width: 38, height: 38, borderRadius: 9, border: '1px solid rgba(255,255,255,0.1)',
+            background: showAdvanced ? 'rgba(94,234,212,0.08)' : 'rgba(255,255,255,0.03)',
+            color: showAdvanced ? 'var(--teal)' : 'var(--text-muted)', cursor: 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, transition: 'all 0.15s',
+          }}
+          title="Pipeline options"
         >
-          <Settings2 size={13} />
-          Pipeline Options
+          <Settings2 size={14} />
         </button>
       </div>
 
-      {/* Advanced options panel */}
+      {/* ── Advanced panel ── */}
       {showAdvanced && (
-        <div className="bg-slate-50/80 border border-slate-200 rounded-xl p-5 space-y-5 animate-fade-in">
-          {/* Num documents */}
-          <div>
-            <label className="flex items-center justify-between text-sm font-medium text-slate-700 mb-3">
+        <div className="animate-fade-in" style={{ marginTop: 14, padding: 18, borderRadius: 12, border: '1px solid rgba(255,255,255,0.07)', background: 'rgba(255,255,255,0.03)' }}>
+          {/* Num docs slider */}
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, fontWeight: 500, color: 'var(--text-secondary)', marginBottom: 8 }}>
               <span>Documents to retrieve</span>
-              <span className="text-xs font-semibold text-white bg-blue-600 px-2.5 py-0.5 rounded-full">
-                {numDocs}
-              </span>
+              <span style={{ padding: '0 8px', borderRadius: 12, background: 'rgba(94,234,212,0.15)', color: 'var(--teal)', fontSize: 11, fontWeight: 700 }}>{numDocs}</span>
             </label>
-            <input
-              type="range"
-              min={1}
-              max={50}
-              value={numDocs}
-              onChange={(e) => setNumDocs(Number(e.target.value))}
-              className="w-full accent-blue-600 h-1.5"
-            />
-            <div className="flex justify-between text-[10px] text-slate-400 mt-1 px-0.5">
-              <span>1</span>
-              <span>10</span>
-              <span>25</span>
-              <span>50</span>
-            </div>
-          </div>
-
-          {/* Mode toggle */}
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-2.5">
-              Retrieval mode
-            </label>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => setMode('dynamic')}
-                className={`flex items-center gap-2 px-4 py-3 rounded-xl border text-left transition-all ${
-                  mode === 'dynamic'
-                    ? 'bg-blue-50 border-blue-300 ring-1 ring-blue-200'
-                    : 'bg-white border-slate-200 hover:border-slate-300'
-                }`}
-              >
-                <Zap size={16} className={mode === 'dynamic' ? 'text-blue-600' : 'text-slate-400'} />
-                <div>
-                  <p className={`text-sm font-medium ${mode === 'dynamic' ? 'text-blue-900' : 'text-slate-700'}`}>
-                    Dynamic
-                  </p>
-                  <p className="text-[11px] text-slate-400">Live OpenAlex + full text</p>
-                </div>
-              </button>
-              <button
-                type="button"
-                onClick={() => setMode('cached')}
-                className={`flex items-center gap-2 px-4 py-3 rounded-xl border text-left transition-all ${
-                  mode === 'cached'
-                    ? 'bg-blue-50 border-blue-300 ring-1 ring-blue-200'
-                    : 'bg-white border-slate-200 hover:border-slate-300'
-                }`}
-              >
-                <Database size={16} className={mode === 'cached' ? 'text-blue-600' : 'text-slate-400'} />
-                <div>
-                  <p className={`text-sm font-medium ${mode === 'cached' ? 'text-blue-900' : 'text-slate-700'}`}>
-                    Cached
-                  </p>
-                  <p className="text-[11px] text-slate-400">Pre-built FAISS index</p>
-                </div>
-              </button>
-            </div>
+            <input type="range" min={1} max={50} value={numDocs} onChange={e => setNumDocs(Number(e.target.value))} style={{ width: '100%' }} />
           </div>
 
           {/* Include summary toggle */}
-          <div className="flex items-center justify-between py-3 px-4 bg-white rounded-xl border border-slate-200">
-            <div className="flex items-center gap-2.5">
-              <Sparkles size={16} className="text-purple-500" />
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 14px', borderRadius: 9, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.03)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Sparkles size={13} style={{ color: 'var(--purple)' }} />
               <div>
-                <p className="text-sm font-medium text-slate-700">AI Research Summary</p>
-                <p className="text-[11px] text-slate-400">Generate a narrative summary (Stage 5)</p>
+                <p style={{ margin: 0, fontSize: 12, fontWeight: 500, color: 'var(--text-primary)' }}>AI Research Summary</p>
+                <p style={{ margin: 0, fontSize: 10, color: 'var(--text-muted)' }}>Generate narrative (Stage 5)</p>
               </div>
             </div>
             <button
               type="button"
               onClick={() => setIncludeSummary(!includeSummary)}
-              className={`relative w-10 h-[22px] rounded-full transition-colors ${
-                includeSummary ? 'bg-blue-600' : 'bg-slate-200'
-              }`}
+              style={{
+                position: 'relative', width: 38, height: 21, borderRadius: 12, border: 'none',
+                background: includeSummary ? 'var(--teal)' : 'rgba(255,255,255,0.15)', cursor: 'pointer', transition: 'background 0.2s', flexShrink: 0,
+              }}
             >
-              <span className={`absolute top-[3px] left-[3px] w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${
-                includeSummary ? 'translate-x-[18px]' : ''
-              }`} />
+              <span style={{
+                position: 'absolute', top: 3, left: 3, width: 15, height: 15, borderRadius: '50%', background: '#fff',
+                transition: 'transform 0.2s', transform: includeSummary ? 'translateX(17px)' : 'none',
+              }} />
             </button>
           </div>
 
           {/* Metadata filters */}
-          <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-4">
-            <div className="flex items-center gap-2 text-sm font-medium text-slate-700">
-              <Filter size={14} className="text-slate-500" />
-              Metadata Filters
+          <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 9, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.03)' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 10 }}>
+              <Filter size={11} /> Metadata Filters
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              {[
+                { label: 'Section', isSelect: true, options: ['Any', 'abstract', 'body'], val: filterSection, set: setFilterSection, optVals: ['', 'abstract', 'body'] },
+                { label: 'Category', isSelect: false, placeholder: 'e.g., rag', val: filterCategory, set: setFilterCategory },
+                { label: 'Tags', isSelect: false, placeholder: 'comma-separated', val: filterTags, set: setFilterTags },
+                { label: 'Title contains', isSelect: false, placeholder: 'keyword', val: filterTitleContains, set: setFilterTitleContains },
+              ].map(({ label, isSelect, val, set, placeholder, options, optVals }) => (
+                <div key={label}>
+                  <label style={{ display: 'block', fontSize: 10, fontWeight: 500, color: 'var(--text-muted)', marginBottom: 4 }}>{label}</label>
+                  {isSelect ? (
+                    <select value={val} onChange={e => set(e.target.value)} style={{ ...inputBase, fontSize: 12 }}>
+                      {(options || []).map((o: string, i: number) => <option key={o} value={(optVals || [])[i]}>{o}</option>)}
+                    </select>
+                  ) : (
+                    <input type="text" value={val} onChange={e => set(e.target.value)} placeholder={placeholder} style={{ ...inputBase, fontSize: 12 }} />
+                  )}
+                </div>
+              ))}
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Section</label>
-                <select
-                  value={filterSection}
-                  onChange={(e) => setFilterSection(e.target.value)}
-                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
-                >
-                  <option value="">Any</option>
-                  <option value="abstract">Abstract</option>
-                  <option value="body">Body</option>
-                </select>
+                <label style={{ display: 'block', fontSize: 10, fontWeight: 500, color: 'var(--text-muted)', marginBottom: 4 }}>Year min</label>
+                <input type="number" value={filterYearMin} onChange={e => setFilterYearMin(e.target.value)} placeholder="2018" style={{ ...inputBase, fontSize: 12 }} />
               </div>
               <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Category</label>
-                <input
-                  type="text"
-                  value={filterCategory}
-                  onChange={(e) => setFilterCategory(e.target.value)}
-                  placeholder="e.g., rag, retrieval"
-                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Tags</label>
-                <input
-                  type="text"
-                  value={filterTags}
-                  onChange={(e) => setFilterTags(e.target.value)}
-                  placeholder="comma-separated tags"
-                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Title contains</label>
-                <input
-                  type="text"
-                  value={filterTitleContains}
-                  onChange={(e) => setFilterTitleContains(e.target.value)}
-                  placeholder="keyword in title"
-                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
-                />
-              </div>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Year min</label>
-                <input
-                  type="number"
-                  value={filterYearMin}
-                  onChange={(e) => setFilterYearMin(e.target.value)}
-                  placeholder="2018"
-                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Year max</label>
-                <input
-                  type="number"
-                  value={filterYearMax}
-                  onChange={(e) => setFilterYearMax(e.target.value)}
-                  placeholder="2024"
-                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1">Source</label>
-                <select
-                  value={filterSource}
-                  onChange={(e) => setFilterSource(e.target.value)}
-                  className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm"
-                >
-                  <option value="">Any</option>
-                  <option value="openalex">OpenAlex</option>
-                  <option value="semantic_scholar">Semantic Scholar</option>
-                </select>
+                <label style={{ display: 'block', fontSize: 10, fontWeight: 500, color: 'var(--text-muted)', marginBottom: 4 }}>Year max</label>
+                <input type="number" value={filterYearMax} onChange={e => setFilterYearMax(e.target.value)} placeholder="2024" style={{ ...inputBase, fontSize: 12 }} />
               </div>
             </div>
           </div>
         </div>
       )}
+
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </form>
   );
 }

@@ -1,39 +1,27 @@
 import { useState } from 'react';
 import { Sparkles, ChevronDown } from 'lucide-react';
 
-interface Props {
-  summary: string | null;
-}
+interface Props { summary: string | null; }
 
 export default function SummaryPanel({ summary }: Props) {
   const [open, setOpen] = useState(false);
-
   if (!summary) return null;
 
   return (
-    <div className="rounded-2xl border border-purple-200/80 overflow-hidden shadow-sm animate-fade-in">
+    <div className="animate-fade-in" style={{ borderRadius: 13, border: '1px solid rgba(167,139,250,0.2)', background: 'rgba(167,139,250,0.05)', overflow: 'hidden' }}>
       <button
         onClick={() => setOpen(!open)}
-        className="flex items-center gap-2.5 w-full text-left px-6 py-4
-                   bg-gradient-to-r from-purple-50 via-indigo-50 to-blue-50
-                   hover:from-purple-100 hover:via-indigo-100 hover:to-blue-100 transition-all"
+        style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', padding: '14px 20px', background: 'transparent', border: 'none', cursor: 'pointer', textAlign: 'left', transition: 'background 0.15s' }}
       >
-        <Sparkles size={16} className="text-purple-500" />
-        <span className="text-sm font-semibold text-slate-800 flex-1">
-          AI Research Summary
-        </span>
-        <span className="text-[10px] text-slate-400 font-medium uppercase tracking-wider mr-2">Stage 5</span>
-        <ChevronDown
-          size={14}
-          className={`text-slate-400 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
-        />
+        <Sparkles size={15} style={{ color: 'var(--purple)' }} />
+        <span style={{ flex: 1, fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>AI Research Summary</span>
+        <span style={{ fontSize: 9, color: 'var(--text-muted)', fontWeight: 500, textTransform: 'uppercase', letterSpacing: '0.08em', marginRight: 8 }}>Stage 5</span>
+        <ChevronDown size={13} style={{ color: 'var(--text-muted)', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }} />
       </button>
 
       {open && (
-        <div className="bg-white px-6 py-5 prose text-sm text-slate-700 leading-relaxed animate-fade-in">
-          {summary.split('\n').map((line, i) =>
-            line.trim() ? <p key={i}>{line}</p> : null
-          )}
+        <div className="prose animate-fade-in" style={{ padding: '0 20px 18px', fontSize: 13, lineHeight: 1.7 }}>
+          {summary.split('\n').map((line, i) => line.trim() ? <p key={i}>{line}</p> : null)}
         </div>
       )}
     </div>
