@@ -1,140 +1,36 @@
-﻿# RAG Backend — XAI-Enhanced Agentic Research Assistant
+# RAG Backend
 
-A **Retrieval-Augmented Generation** system for semantic search over academic papers with sentence-level evidence extraction and agentic query decomposition.
-
-Given a research question, the system automatically:
-1. Decomposes it into sub-questions using an LLM
-2. Fetches relevant open-access papers from OpenAlex / Semantic Scholar
-3. Downloads and extracts full-text PDFs
-4. Chunks, embeds, and retrieves the most relevant passages
-5. Returns grouped answers with sentence-level evidence and citations
-
----
-
-## Features
-
-### Stage 1 — Core RAG Pipeline
-- **Dual API Ingestion** — Fetch papers from OpenAlex and Semantic Scholar
-- **SciBERT Embeddings** — 768-dimensional scientific text embeddings (`allenai/scibert_scivocab_uncased`)
-- **FAISS Vector Search** — Fast similarity search with `IndexFlatIP`
-- **MongoDB Storage** — Persistent paper and chunk storage on MongoDB Atlas
-- **Answer Generation** — Structured answers with paper citations
-
-### Stage 2 — Sentence-Level Evidence
-- **Evidence Extraction** — Find the single most relevant sentence per chunk
-- **Dual Scoring** — Chunk similarity + sentence-level evidence similarity
-- **NLTK Tokenization** — Robust sentence splitting
-
-### Stage 3 — Agentic RAG
-- **LLM Abstraction** — Supports Ollama (local), Google Gemini, and Groq Cloud
-- **PlannerAgent** — Decomposes complex queries into 2-4 sub-questions + search queries
-- **Dynamic Paper Fetching** — Fetch fresh papers at query time via `--dynamic` flag
-- **Two-Stage Retrieval** — Abstract relevance filtering → full-text download → chunk → retrieve
-- **Full-Text Extraction** — PDF extraction via PyMuPDF, HTML via BeautifulSoup
-- **Unpaywall + PMC Fallbacks** — Unpaywall API for OA links, NCBI E-utilities for PMC XML
-- **Open-Access Filter** — Only fetches OA papers with downloadable URLs
-- **Smart Chunk Assignment** — Embedding-based assignment with multi-assign + backfill guarantee
-- **Grouped Output** — Answers organized by sub-question with claims, evidence, and sources
-
----
-
-## Architecture
-
-```
-User Query
-    │
-    ▼
-┌──────────────────┐
-│   PlannerAgent   │  ← LLM decomposes query into sub-questions + search queries
-│   (Groq/Gemini)  │
-└────────┬─────────┘
-         │
-         ▼
-┌──────────────────┐     ┌──────────────────┐
-│  DynamicRetriever│────►│   OpenAlex API   │
-│   (Two-Stage)    │     │ Semantic Scholar │
-└────────┬─────────┘     └──────────────────┘
-         │
-    Stage A: Embed abstracts → cosine similarity filter
-    Stage B: Download full-text PDF → chunk → embed → retrieve
-         │
-         ▼
-┌──────────────────┐     ┌──────────────────┐
-│  Full-Text       │────►│  PyMuPDF (PDF)   │
-│  Fetcher         │     │  BeautifulSoup   │
-│                  │     │  Unpaywall API   │
-│                  │     │  NCBI E-utils    │
-└────────┬─────────┘     └──────────────────┘
-         │
-         ▼
-┌──────────────────┐
-│  TextChunker     │  ← 8–12 sentence chunks
-└────────┬─────────┘
-         │
-         ▼
-┌──────────────────┐     ┌──────────────────┐
-│  EmbeddingGen    │────►│  FAISS Index     │
-│  (SciBERT 768d)  │     │  (IndexFlatIP)   │
-└────────┬─────────┘     └──────────────────┘
-         │
-         ▼
-┌──────────────────┐
-│  Evidence        │  ← Sentence-level evidence extraction
-│  Extractor       │
-└────────┬─────────┘
-         │
-         ▼
-┌──────────────────┐
-│  AnswerGenerator │  ← Grouped output by sub-question with citations
-└──────────────────┘
-```
-
----
-
-## Prerequisites
-
-- **Python 3.11+**
-- **uv** — Fast Python package manager ([install guide](https://docs.astral.sh/uv/getting-started/installation/))
-- **MongoDB Atlas** account — Free tier works ([mongodb.com/atlas](https://www.mongodb.com/atlas))
-- **Groq API key** (recommended, free) — [console.groq.com/keys](https://console.groq.com/keys)
-- **OpenAlex API key** (optional, free) — [openalex.org/settings/api](https://openalex.org/settings/api)
+Python backend for the Blues XAI-Enhanced Agentic RAG Research Assistant. Implements Stages 1�5 of the pipeline (planning, retrieval, answer generation, verification, trace & summary) plus the FastAPI REST API (Stage 6).
 
 ---
 
 ## Setup
 
-### 1. Clone and navigate
+### 1. Create virtual environment
 
 ```bash
-git clone https://github.com/Aparna0224/Blues.git
-cd Blues/rag-backend
-```
-
-### 2. Create virtual environment
-
-```bash
+cd rag-backend
 uv venv
 ```
 
-### 3. Activate environment
+### 2. Activate
 
-**Windows (PowerShell):**
 ```powershell
+# Windows PowerShell
 .\.venv\Scripts\Activate.ps1
 ```
-
-**macOS / Linux:**
 ```bash
+# macOS / Linux
 source .venv/bin/activate
 ```
 
-### 4. Install dependencies
+### 3. Install dependencies
 
 ```bash
 uv pip sync pyproject.toml
 ```
 
-### 5. Configure environment
+### 4. Configure environment
 
 ```bash
 cp .env.example .env
@@ -147,15 +43,15 @@ Edit `.env` with your credentials:
 MONGO_URI=mongodb+srv://username:password@cluster.mongodb.net/
 MONGO_DB=xai_rag
 
-# LLM (pick one provider)
+# LLM Provider (pick one: local, gemini, groq)
 LLM_PROVIDER=groq
 GROQ_API_KEY=gsk_your_key_here
 
-# Optional (improves paper fetching rate limits)
+# Optional � higher rate limits for paper fetching
 OPENALEX_API_KEY=your_key_here
 ```
 
-### 6. Download NLTK data (first time only)
+### 5. Download NLTK data (first time only)
 
 ```bash
 python -c "import nltk; nltk.download('punkt_tab')"
@@ -163,11 +59,81 @@ python -c "import nltk; nltk.download('punkt_tab')"
 
 ---
 
-## Usage
+## Running the API Server
 
-### Quick Start — Full Agentic RAG (Recommended)
+```bash
+uv run uvicorn src.api:app --host 0.0.0.0 --port 8000 --reload
+```
 
-Run a research question with dynamic paper fetching and agentic planning:
+Swagger docs: **http://localhost:8000/docs**
+
+### API Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/api/query` | Run the full RAG pipeline on a research question |
+| `POST` | `/api/upload` | Upload a PDF paper for ingestion, chunking, and indexing |
+| `GET` | `/api/status` | System health � MongoDB, FAISS vectors, LLM provider |
+| `GET` | `/api/traces/{id}` | Retrieve a saved execution trace |
+
+### POST /api/query � Request Body
+
+```json
+{
+  "query": "What are the main approaches to explainable AI?",
+  "num_documents": 15,
+  "mode": "dynamic",
+  "include_summary": true
+}
+```
+
+### POST /api/query � Response
+
+```json
+{
+  "execution_id": "055b1122-...",
+  "status": "success",
+  "planning": {
+    "main_question": "...",
+    "sub_questions": ["...", "..."],
+    "search_queries": ["...", "..."],
+    "latency_ms": 1234.5
+  },
+  "grouped_answer": "## Sub-question 1\n...",
+  "chunks_used": 15,
+  "papers_found": [
+    { "paper_id": "...", "title": "...", "authors": "...", "year": "2023", "doi": "..." }
+  ],
+  "verification": {
+    "confidence_score": 0.89,
+    "metrics": {
+      "avg_similarity": 0.72,
+      "source_diversity": 6,
+      "normalized_source_diversity": 0.85,
+      "evidence_density": 0.93,
+      "conflicts_detected": []
+    },
+    "warnings": [],
+    "audit": {
+      "total_claims_received": 15,
+      "claims_after_dedup": 14,
+      "claims_after_relevance_filter": 13,
+      "claims_above_similarity_threshold": 12,
+      "claims_used_for_scoring": 12,
+      "claims_rejected": 3
+    }
+  },
+  "summary": "According to recent studies...",
+  "total_time_ms": 45000.0,
+  "warnings": []
+}
+```
+
+---
+
+## CLI Usage
+
+### Full Agentic RAG (Recommended)
 
 ```bash
 uv run python -m src.main query \
@@ -175,75 +141,72 @@ uv run python -m src.main query \
   --plan --dynamic
 ```
 
-This will:
-1. Decompose the query into sub-questions (via LLM)
-2. Fetch fresh open-access papers from OpenAlex
-3. Download full-text PDFs where available
-4. Chunk and embed all content
-5. Retrieve the most relevant chunks
-6. Display grouped answer organized by sub-question
-
-Output is saved to `rag_output.txt`.
-
-### CLI Commands
-
-#### Ingest papers into the database
+### All Commands
 
 ```bash
-# From OpenAlex (default, OA-only)
+# Ingest papers into MongoDB
 uv run python -m src.main ingest --query "machine learning" --max-results 10
 
-# From Semantic Scholar
-uv run python -m src.main ingest --query "deep learning" --source semantic_scholar
-
-# From both APIs
-uv run python -m src.main ingest --query "neural networks" --source both --max-results 20
-```
-
-#### Build FAISS index (for static retrieval)
-
-```bash
+# Build FAISS index (for static/cached mode)
 uv run python -m src.main build-index
-```
 
-#### Query the system
+# Query � increasing capability
+uv run python -m src.main query --query "..." --top-k 5              # Stage 1: basic retrieval
+uv run python -m src.main query --query "..." --evidence              # Stage 2: + evidence
+uv run python -m src.main query --query "..." --plan                  # Stage 3: + planning (static)
+uv run python -m src.main query --query "..." --plan --dynamic        # Stage 3: + live fetch
 
-```bash
-# Stage 1: Basic chunk retrieval (requires pre-ingested data + FAISS index)
-uv run python -m src.main query --query "What is deep learning?" --top-k 5
-
-# Stage 2: With sentence-level evidence
-uv run python -m src.main query --query "What is deep learning?" --evidence
-
-# Stage 3: Agentic RAG with static index
-uv run python -m src.main query --query "What is deep learning?" --plan
-
-# Stage 3: Agentic RAG with dynamic paper fetching (no pre-ingestion needed)
-uv run python -m src.main query --query "What is deep learning?" --plan --dynamic
-```
-
-#### Check system status
-
-```bash
+# System status
 uv run python -m src.main status
-```
 
-#### Reset all data
-
-```bash
+# Reset all data
 uv run python -m src.main reset
 ```
 
+### Query Modes
+
+| Flag | Mode | Pre-ingestion? |
+|------|------|---------------|
+| _(none)_ | Basic FAISS retrieval | Yes |
+| `--evidence` | + sentence-level evidence | Yes |
+| `--plan` | + LLM query decomposition (static index) | Yes |
+| `--plan --dynamic` | + live paper fetching from APIs | **No** |
+
 ---
 
-## Query Modes Explained
+## Pipeline Stages
 
-| Flag | Mode | What it does | Pre-ingestion needed? |
-|------|------|--------------|-----------------------|
-| _(none)_ | Stage 1 | FAISS search → chunk retrieval → answer | Yes |
-| `--evidence` | Stage 2 | + sentence-level evidence extraction | Yes |
-| `--plan` | Stage 3 (static) | + LLM query decomposition → multi-retrieve | Yes |
-| `--plan --dynamic` | Stage 3 (dynamic) | + fetch fresh papers on-the-fly from APIs | **No** |
+### Stage 1 � Core RAG
+- **Dual API Ingestion** � OpenAlex + Semantic Scholar
+- **SciBERT Embeddings** � `allenai/scibert_scivocab_uncased` (768d)
+- **FAISS Vector Search** � `IndexFlatIP` (inner product / cosine similarity)
+- **MongoDB Atlas** � Persistent paper + chunk storage
+
+### Stage 2 � Sentence-Level Evidence
+- **EvidenceExtractor** � Finds the single most relevant sentence per chunk
+- **Dual Scoring** � Chunk similarity + sentence evidence similarity
+- **NLTK** � `punkt_tab` sentence tokenizer
+
+### Stage 3 � Agentic RAG
+- **PlannerAgent** � LLM decomposes query into 2�4 sub-questions + search queries
+- **DynamicRetriever** � Two-stage: abstract relevance filter ? full-text fetch ? chunk ? retrieve
+- **FullTextFetcher** � PDF (PyMuPDF), HTML (BeautifulSoup), Unpaywall, NCBI E-utilities
+- **Open-Access Filter** � Only OA papers with downloadable URLs
+- **Smart Chunk Assignment** � Embedding-based multi-assign with backfill guarantee
+- **LLM Abstraction** � `BaseLLM` ? Ollama / Gemini / Groq via `get_llm()` factory
+
+### Stage 4 � Verification Agent
+- **Deterministic** � No LLM calls; pure metrics
+- **Claim Relevance Filtering** � Rejects generic/motivational sentences
+- **Claim Deduplication** � N-gram Jaccard overlap
+- **Similarity Threshold Gating** � Ignores weak matches
+- **Metrics** � `avg_similarity`, `source_diversity`, `evidence_density`
+- **Cross-Paper Conflict Detection** � Flags contradictory findings
+- **Structured Audit Log** � Full filtering pipeline transparency
+
+### Stage 5 � Trace & Summary
+- **ExecutionTracer** � Records every pipeline decision (JSON + MongoDB)
+- **PipelineSummarizer** � LLM generates 100�200 word narrative summary
 
 ---
 
@@ -251,53 +214,62 @@ uv run python -m src.main reset
 
 ```
 rag-backend/
-├── src/
-│   ├── __init__.py
-│   ├── config.py                   # Configuration from .env
-│   ├── database.py                 # MongoDB connection (singleton)
-│   ├── main.py                     # CLI entry point (Click)
-│   ├── vector_store.py             # FAISS index operations
-│   │
-│   ├── agents/
-│   │   └── planner.py              # PlannerAgent — query decomposition via LLM
-│   │
-│   ├── chunking/
-│   │   └── processor.py            # TextChunker — 8-12 sentence chunks
-│   │
-│   ├── embeddings/
-│   │   └── embedder.py             # EmbeddingGenerator — SciBERT (768d)
-│   │
-│   ├── evidence/
-│   │   └── extractor.py            # EvidenceExtractor — sentence-level scoring
-│   │
-│   ├── generation/
-│   │   └── generator.py            # AnswerGenerator — grouped output with citations
-│   │
-│   ├── ingestion/
-│   │   ├── loader.py               # PaperIngestor — OpenAlex + Semantic Scholar
-│   │   └── fulltext.py             # FullTextFetcher — PDF/HTML/Unpaywall/PMC
-│   │
-│   ├── llm/
-│   │   ├── base.py                 # BaseLLM abstract class
-│   │   ├── factory.py              # get_llm() factory
-│   │   ├── local.py                # Ollama (local)
-│   │   ├── gemini_llm.py           # Google Gemini API
-│   │   └── groq_llm.py             # Groq Cloud API (recommended)
-│   │
-│   └── retrieval/
-│       ├── retriever.py            # Retriever — FAISS-based static search
-│       └── dynamic_retriever.py    # DynamicRetriever — two-stage live retrieval
-│
-├── tests/
-│   └── test_evidence.py            # 21 unit tests for evidence extraction
-│
-├── data/
-│   └── faiss_index.bin             # FAISS index file (generated)
-│
-├── output/                         # Cached pipeline outputs (JSON)
-├── pyproject.toml                  # Dependencies (uv)
-├── .env.example                    # Environment variable template
-└── rag_output.txt                  # Latest query output
++-- pyproject.toml                      ? Dependencies (uv)
++-- .env.example                        ? Environment variable template
++-- rag_output.txt                      ? Latest CLI output
+�
++-- src/
+�   +-- __init__.py
+�   +-- config.py                       ? Centralised config from .env
+�   +-- database.py                     ? MongoDB client (singleton)
+�   +-- main.py                         ? CLI entry point (Click)
+�   +-- api.py                          ? FastAPI REST API (Stage 6)
+�   +-- vector_store.py                 ? FAISS index operations
+�   �
+�   +-- agents/
+�   �   +-- planner.py                  ? PlannerAgent � query decomposition
+�   �   +-- verification.py             ? VerificationAgent � confidence scoring
+�   �
+�   +-- chunking/
+�   �   +-- processor.py                ? TextChunker � 8�12 sentence chunks
+�   �
+�   +-- embeddings/
+�   �   +-- embedder.py                 ? EmbeddingGenerator � SciBERT (768d)
+�   �
+�   +-- evidence/
+�   �   +-- extractor.py                ? EvidenceExtractor � sentence-level scoring
+�   �
+�   +-- generation/
+�   �   +-- generator.py                ? AnswerGenerator � grouped output with citations
+�   �   +-- summarizer.py               ? PipelineSummarizer � LLM narrative summary
+�   �
+�   +-- ingestion/
+�   �   +-- loader.py                   ? PaperIngestor � OpenAlex + Semantic Scholar
+�   �   +-- fulltext.py                 ? FullTextFetcher � PDF/HTML/Unpaywall/PMC
+�   �
+�   +-- llm/
+�   �   +-- base.py                     ? BaseLLM abstract class
+�   �   +-- factory.py                  ? get_llm() factory
+�   �   +-- local.py                    ? Ollama adapter
+�   �   +-- gemini_llm.py               ? Google Gemini adapter
+�   �   +-- groq_llm.py                 ? Groq Cloud adapter
+�   �
+�   +-- retrieval/
+�   �   +-- retriever.py                ? Retriever � static FAISS search
+�   �   +-- dynamic_retriever.py        ? DynamicRetriever � two-stage live retrieval
+�   �
+�   +-- trace/
+�       +-- tracer.py                   ? ExecutionTracer � pipeline trace
+�
++-- tests/
+�   +-- test_evidence.py                ? 21 tests � evidence extraction
+�   +-- test_verification.py            ? 33 tests � verification agent
+�   +-- test_trace.py                   ? 21 tests � execution tracer
+�
++-- data/
+�   +-- faiss_index.bin                 ? FAISS index (generated)
+�
++-- output/                             ? Pipeline outputs (JSON)
 ```
 
 ---
@@ -306,18 +278,18 @@ rag-backend/
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `MONGO_URI` | **Yes** | — | MongoDB Atlas connection string |
+| `MONGO_URI` | **Yes** | � | MongoDB Atlas connection string |
 | `MONGO_DB` | No | `xai_rag` | Database name |
-| `LLM_PROVIDER` | No | `local` | LLM backend: `local`, `gemini`, or `groq` |
-| `GROQ_API_KEY` | If groq | — | Groq Cloud API key |
-| `GROQ_MODEL` | No | `llama-3.3-70b-versatile` | Groq model |
-| `GEMINI_API_KEY` | If gemini | — | Google Gemini API key |
-| `GEMINI_MODEL` | No | `gemini-2.0-flash` | Gemini model |
+| `LLM_PROVIDER` | No | `local` | `local` / `gemini` / `groq` |
+| `GROQ_API_KEY` | If groq | � | Groq Cloud API key |
+| `GROQ_MODEL` | No | `llama-3.3-70b-versatile` | Groq model name |
+| `GEMINI_API_KEY` | If gemini | � | Google Gemini API key |
+| `GEMINI_MODEL` | No | `gemini-2.0-flash` | Gemini model name |
 | `OLLAMA_BASE_URL` | If local | `http://localhost:11434` | Ollama server URL |
-| `OLLAMA_MODEL` | No | `llama3:8b-instruct` | Ollama model |
-| `OPENALEX_API_KEY` | No | — | OpenAlex API key (higher rate limits) |
-| `SEMANTIC_SCHOLAR_API_KEY` | No | — | Semantic Scholar API key |
-| `EMBEDDING_MODEL` | No | `allenai/scibert_scivocab_uncased` | Embedding model |
+| `OLLAMA_MODEL` | No | `llama3:8b-instruct` | Ollama model name |
+| `OPENALEX_API_KEY` | No | � | OpenAlex polite pool key |
+| `SEMANTIC_SCHOLAR_API_KEY` | No | � | Semantic Scholar API key |
+| `EMBEDDING_MODEL` | No | `allenai/scibert_scivocab_uncased` | HuggingFace embedding model |
 | `FAISS_INDEX_PATH` | No | `./data/faiss_index.bin` | FAISS index file path |
 | `TOP_K` | No | `5` | Default chunks to retrieve |
 | `LLM_TEMPERATURE` | No | `0.1` | LLM generation temperature |
@@ -325,111 +297,69 @@ rag-backend/
 
 ---
 
-## Running Tests
+## Tests
 
 ```bash
-# Run all tests
+# All 75 tests
 uv run python -m pytest tests/ -v
 
-# Run evidence extraction tests only
-uv run python -m pytest tests/test_evidence.py -v
+# By module
+uv run python -m pytest tests/test_evidence.py -v        # 21 � evidence extraction
+uv run python -m pytest tests/test_verification.py -v     # 33 � verification agent
+uv run python -m pytest tests/test_trace.py -v            # 21 � execution tracer
+
+# With coverage
+uv run python -m pytest tests/ --cov=src --cov-report=term-missing
 ```
 
 ---
 
-## How It Works (Dynamic Mode)
-
-When you run with `--plan --dynamic`, the pipeline executes:
+## Dynamic Mode Pipeline
 
 ```
-1. PLANNER AGENT
-   User query → LLM → sub-questions + search queries
+1. PLANNING
+   User query ? LLM ? sub-questions + search queries
 
-2. STAGE A — Abstract Relevance Filtering
-   Search queries → OpenAlex API (OA-only) → fetch papers
-   Embed each abstract → cosine similarity vs query
-   Keep papers above threshold (0.35)
+2. ABSTRACT FILTERING
+   Search queries ? OpenAlex API (OA-only)
+   Embed abstracts ? cosine similarity filter (threshold 0.35)
 
-3. STAGE B — Full-Text Fetch & Retrieval
+3. FULL-TEXT RETRIEVAL
    For each relevant paper:
-     Try: direct PDF URL → Unpaywall API → NCBI E-utilities (PMC)
-     Extract text: PyMuPDF (PDF) or BeautifulSoup (HTML)
-   Chunk full text into 8-12 sentence chunks
-   Embed all chunks with SciBERT
-   Cosine similarity search → top-k chunks
+     ? Direct PDF URL (OpenAlex best_oa_location)
+     ? Unpaywall API (OA link via DOI)
+     ? NCBI E-utilities (PMC XML)
+     ? Fallback: abstract only
+   Extract text: PyMuPDF (PDF) / BeautifulSoup (HTML/XML)
 
-4. EVIDENCE EXTRACTION
-   For each top chunk → find the single most relevant sentence
+4. CHUNKING + EMBEDDING
+   8�12 sentence chunks ? SciBERT (768d) ? FAISS search
 
-5. ANSWER GENERATION
-   Assign chunks to sub-questions (embedding similarity)
-   Display grouped output with claims, evidence scores, and sources
+5. EVIDENCE EXTRACTION
+   Per chunk ? most relevant sentence
+   Assign chunks to sub-questions via embedding similarity
+
+6. ANSWER GENERATION
+   Grouped output by sub-question with claims + citations
+
+7. VERIFICATION
+   Claim filtering ? dedup ? relevance ? similarity threshold
+   Metrics + conflict detection + audit log
+
+8. SUMMARY
+   LLM narrative summary (100�200 words)
+   Full execution trace saved to JSON + MongoDB
 ```
-
----
-
-## Full-Text Download Strategy
-
-The system tries multiple methods to get paper full text:
-
-| Priority | Method | Success Rate |
-|----------|--------|-------------|
-| 1 | Direct PDF URL from OpenAlex `best_oa_location` | ~60% |
-| 2 | Open access URL (`oa_url`) | ~10% |
-| 3 | Publisher-specific alternatives (EuropePMC, etc.) | ~5% |
-| 4 | **Unpaywall API** — finds working OA links via DOI | ~15% |
-| 5 | **NCBI E-utilities** — fetches PMC full-text XML directly | ~10% |
-| Fallback | Use abstract only | Always works |
-
-> **Note:** Some publishers (e.g., MDPI) block all automated downloads. The system gracefully falls back to using the abstract for these papers.
 
 ---
 
 ## Troubleshooting
 
-### MongoDB connection error
-- Verify `MONGO_URI` in `.env` is correct
-- Check that your IP is whitelisted in MongoDB Atlas → Network Access
-- Try `0.0.0.0/0` (allow from anywhere) for testing
-
-### "No papers found" during dynamic retrieval
-- Check internet connectivity
-- OpenAlex API may be temporarily down — try again in a minute
-- Try a broader query
-
-### LLM errors (planning step fails)
-- If using Groq: verify `GROQ_API_KEY` in `.env`
-- If using Ollama: ensure `ollama serve` is running and the model is pulled
-- Check `LLM_PROVIDER` matches your setup
-
-### Out of memory during embedding
-- Reduce `--max-results` when ingesting
-- The SciBERT model uses ~500MB RAM — 8GB system RAM recommended
-
-### FAISS index not found (static mode)
-- Run `uv run python -m src.main build-index` first
-- Or use `--dynamic` mode which doesn't need a pre-built index
-
----
-
-## Tech Stack
-
-| Component | Technology |
-|-----------|-----------|
-| Language | Python 3.11+ |
-| Package Manager | uv |
-| Database | MongoDB Atlas |
-| Vector Store | FAISS (IndexFlatIP, inner product) |
-| Embeddings | SciBERT (`allenai/scibert_scivocab_uncased`, 768d) |
-| LLM | Groq Cloud / Google Gemini / Ollama |
-| Paper APIs | OpenAlex, Semantic Scholar |
-| Full-Text | PyMuPDF, BeautifulSoup, Unpaywall, NCBI E-utilities |
-| CLI | Click |
-| PDF Extraction | PyMuPDF (fitz) |
-| HTML Extraction | BeautifulSoup4 |
-
----
-
-## License
-
-MIT
+| Problem | Solution |
+|---------|----------|
+| MongoDB connection error | Verify `MONGO_URI`; whitelist IP in Atlas Network Access |
+| "No papers found" | Check internet; try broader query; OpenAlex may be down |
+| LLM planning fails | Check `LLM_PROVIDER` + API key in `.env` |
+| `ModuleNotFoundError: No module named 'src'` | Run uvicorn from `rag-backend/` directory |
+| Out of memory | Reduce `--max-results`; SciBERT needs ~500 MB RAM |
+| FAISS index not found | Run `build-index` or use `--dynamic` mode |

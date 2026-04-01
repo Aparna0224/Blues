@@ -22,6 +22,8 @@ class MongoDBClient:
     
     def connect(self):
         """Connect to MongoDB and initialize collections."""
+        if self.initialized:
+            return
         try:
             self.client = MongoClient(
                 Config.MONGO_URI,
@@ -55,6 +57,14 @@ class MongoDBClient:
             self.db[Config.MONGO_CHUNKS_COLLECTION].create_index("chunk_id", unique=True)
             self.db[Config.MONGO_CHUNKS_COLLECTION].create_index("paper_id")
             print(f"✓ Created collection: {Config.MONGO_CHUNKS_COLLECTION}")
+        
+        # Execution traces collection (Stage 5)
+        if "execution_traces" not in self.db.list_collection_names():
+            self.db.create_collection("execution_traces")
+            self.db["execution_traces"].create_index("execution_id", unique=True)
+            self.db["execution_traces"].create_index("timestamp")
+            self.db["execution_traces"].create_index("status")
+            print(f"✓ Created collection: execution_traces")
     
     def get_papers_collection(self):
         """Get papers collection."""
@@ -67,6 +77,49 @@ class MongoDBClient:
         if not self.initialized:
             self.connect()
         return self.db[Config.MONGO_CHUNKS_COLLECTION]
+    
+    def get_traces_collection(self):
+        """Get execution traces collection (Stage 5)."""
+        if not self.initialized:
+            self.connect()
+        return self.db["execution_traces"]
+    
+    def store_trace(self, trace: dict) -> str:
+        """Store an execution trace in MongoDB.
+        
+        Args:
+            trace: Full trace dict from ExecutionTracer.finalize()
+            
+        Returns:
+            The execution_id of the stored trace.
+        """
+        if not self.initialized:
+            self.connect()
+        collection = self.db["execution_traces"]
+        collection.replace_one(
+            {"execution_id": trace["execution_id"]},
+            trace,
+            upsert=True,
+        )
+        return trace["execution_id"]
+    
+    def get_trace(self, execution_id: str) -> dict | None:
+        """Retrieve an execution trace by execution_id.
+        
+        Args:
+            execution_id: UUID of the execution to retrieve.
+            
+        Returns:
+            Trace dict or None if not found.
+        """
+        if not self.initialized:
+            self.connect()
+        collection = self.db["execution_traces"]
+        result = collection.find_one(
+            {"execution_id": execution_id},
+            {"_id": 0},  # exclude MongoDB _id
+        )
+        return result
     
     def close(self):
         """Close MongoDB connection."""
