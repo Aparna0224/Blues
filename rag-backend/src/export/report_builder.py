@@ -15,15 +15,18 @@ class ReportBuilder:
 
     def build_markdown(self, analysis: Dict[str, Any]) -> str:
         query = analysis.get("query", "")
+        report_title = analysis.get("report_title") or query or f"{self.system_name} Research Report"
+        project_name = analysis.get("project_name") or "Untitled Project"
         generated_at = analysis.get("generated_at") or datetime.utcnow().isoformat()
         references = analysis.get("references", [])
         sub_sections = analysis.get("sub_questions", [])
         summary = analysis.get("final_summary", "")
 
         lines: List[str] = []
-        lines.append(f"# {self.system_name} — Comprehensive Research Guide")
+        lines.append(f"# {report_title}")
         lines.append("")
         lines.append("## Title Page")
+        lines.append(f"- **Project Name:** {project_name}")
         lines.append(f"- **Query:** {query}")
         lines.append(f"- **Generated at:** {generated_at}")
         lines.append(f"- **Total papers used:** {len(references)}")

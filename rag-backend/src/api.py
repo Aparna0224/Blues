@@ -16,6 +16,7 @@ import time
 import uuid
 import tempfile
 import traceback
+import re
 from typing import Optional
 from datetime import datetime, timezone
 
@@ -46,6 +47,24 @@ app.add_middleware(
 
 # In-memory cache for downloadable report payloads keyed by execution_id.
 REPORT_CACHE: dict[str, dict] = {}
+
+
+def _slugify(value: str, fallback: str = "report") -> str:
+    text = (value or "").strip().lower()
+    text = re.sub(r"[^a-z0-9]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("_")
+    return text[:64] or fallback
+
+
+def _short_timestamp(value: str | None) -> str:
+    if not value:
+        return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+    try:
+        normalized = value.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        return dt.strftime("%Y%m%d_%H%M")
+    except Exception:
+        return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
 
 
 # ─── Request / Response models ───────────────────────────────────
@@ -390,6 +409,9 @@ async def run_query(req: QueryRequest):
 async def download_report(
     format: str = Query(default="pdf", pattern="^(pdf|md)$"),
     execution_id: str = Query(..., min_length=6),
+    project_name: str | None = Query(default=None),
+    query_text: str | None = Query(default=None),
+    generated_at: str | None = Query(default=None),
 ):
     """Download a comprehensive report in PDF or Markdown format for a completed execution."""
     from src.export.report_builder import ReportBuilder
@@ -401,20 +423,31 @@ async def download_report(
             detail="Report data not found for execution_id. Re-run query and try download again.",
         )
 
+    analysis_for_report = dict(analysis)
+    effective_query = (query_text or analysis_for_report.get("query") or "Research Query").strip()
+    effective_generated_at = generated_at or analysis_for_report.get("generated_at") or datetime.now(timezone.utc).isoformat()
+
+    analysis_for_report["query"] = effective_query
+    analysis_for_report["generated_at"] = effective_generated_at
+    analysis_for_report["project_name"] = (project_name or analysis_for_report.get("project_name") or "Untitled Project").strip()
+    analysis_for_report["report_title"] = effective_query
+
     builder = ReportBuilder(system_name="Blues")
+    file_stem = f"{_slugify(effective_query, fallback='query')}_{_short_timestamp(effective_generated_at)}"
+
     if format == "md":
-        body = builder.build_markdown(analysis).encode("utf-8")
+        body = builder.build_markdown(analysis_for_report).encode("utf-8")
         return Response(
             content=body,
             media_type="text/markdown; charset=utf-8",
-            headers={"Content-Disposition": f"attachment; filename=blues_report_{execution_id}.md"},
+            headers={"Content-Disposition": f"attachment; filename={file_stem}.md"},
         )
 
-    body = builder.build_pdf(analysis)
+    body = builder.build_pdf(analysis_for_report)
     return Response(
         content=body,
         media_type="application/pdf",
-        headers={"Content-Disposition": f"attachment; filename=blues_report_{execution_id}.pdf"},
+        headers={"Content-Disposition": f"attachment; filename={file_stem}.pdf"},
     )
 
 

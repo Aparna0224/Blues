@@ -34,34 +34,53 @@ function App() {
     currentQuery,
     currentResult,
     currentQueryId,
-    queryHistory,
+    isLoading,
     projects,
     createProject,
     switchProject,
+    renameProject,
+    deleteProject,
+    clearCurrentQuery,
+    updateQueryTrace,
+    setIsLoading,
     addQueryRecord,
     loadQuery,
   } = useWorkspace();
 
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [backendOnline, setBackendOnline] = useState<boolean | null>(null);
   const [activeNav, setActiveNav] = useState('current');
   const [loadingStage, setLoadingStage] = useState(0);
+  const [pausedActionsMessage, setPausedActionsMessage] = useState('');
+  const [projectNameEditing, setProjectNameEditing] = useState(false);
+  const [projectNameDraft, setProjectNameDraft] = useState('');
 
   const contentRef = useRef<HTMLDivElement>(null);
   const previousNavRef = useRef(activeNav);
   const scrollByTabRef = useRef<Record<string, number>>({});
 
   const loadingStages = useMemo(
-    () => ['Stage 1 → Planning', 'Stage 2 → Retrieval', 'Stage 3 → Evidence', 'Stage 4 → Verification', 'Stage 5 → Summary'],
+    () => ['Stage 1 → Planning', 'Stage 2 → Retrieval', 'Stage 3 → Ranking', 'Stage 4 → Evidence', 'Stage 5 → Summary'],
     [],
   );
+
+  useEffect(() => {
+    setProjectNameDraft(currentProject?.name ?? 'Project');
+  }, [currentProject?.name]);
 
   useEffect(() => {
     getStatus()
       .then(() => setBackendOnline(true))
       .catch(() => setBackendOnline(false));
   }, []);
+
+  useEffect(() => {
+    if (isLoading) {
+      setPausedActionsMessage('Processing in progress — actions paused');
+    } else {
+      setPausedActionsMessage('');
+    }
+  }, [isLoading]);
 
   useEffect(() => {
     const container = contentRef.current;
@@ -81,7 +100,7 @@ function App() {
   }, [activeNav]);
 
   const handleSubmit = async (req: QueryRequest) => {
-    setLoading(true);
+    setIsLoading(true);
     setLoadingStage(0);
     setError('');
 
@@ -111,8 +130,35 @@ function App() {
       setError(extractErrorMessage(err));
     } finally {
       window.clearInterval(stageTicker);
-      setLoading(false);
+      setIsLoading(false);
       setLoadingStage(loadingStages.length - 1);
+    }
+  };
+
+  const runWhenIdle = (action: () => void) => {
+    if (isLoading) {
+      setPausedActionsMessage('Processing in progress — actions paused');
+      return;
+    }
+    action();
+  };
+
+  const submitProjectRename = () => {
+    if (!currentProject) return;
+    renameProject(currentProject.id, projectNameDraft);
+    setProjectNameEditing(false);
+  };
+
+  const handleSelectQuery = async (queryId: string) => {
+    loadQuery(queryId);
+    const selected = projects.flatMap(p => p.queries).find(q => q.query_id === queryId);
+    if (selected?.trace) return;
+
+    try {
+      const trace = await getTrace(queryId);
+      updateQueryTrace(queryId, trace);
+    } catch {
+      updateQueryTrace(queryId, null);
     }
   };
 
@@ -123,24 +169,34 @@ function App() {
       case 'analysis':
         return (
           <XaiAnalysisView
-            queryHistory={queryHistory}
+            queries={currentProject?.queries ?? []}
             currentQueryId={currentQueryId}
-            onSelectQuery={loadQuery}
+            activeQuery={currentQuery}
+            onSelectQuery={(queryId) => runWhenIdle(() => { void handleSelectQuery(queryId); })}
           />
         );
       case 'conflicts':
-        return <ConflictMapView result={currentResult} />;
+        return (
+          <ConflictMapView
+            result={currentResult}
+            projectName={currentProject?.name ?? 'Project'}
+            queryText={currentQuery?.query_text ?? 'New Query'}
+          />
+        );
       case 'library':
         return (
           <ProjectLibraryView
             projects={projects}
             currentProjectId={currentProject?.id ?? ''}
-            onSwitchProject={switchProject}
-            onSelectQuery={loadQuery}
+            onSwitchProject={(projectId) => runWhenIdle(() => switchProject(projectId))}
+            onRenameProject={renameProject}
+            onDeleteProject={(projectId) => runWhenIdle(() => deleteProject(projectId))}
+            onSelectQuery={(queryId) => runWhenIdle(() => { void handleSelectQuery(queryId); })}
+            disableActions={isLoading}
           />
         );
       case 'saved':
-        return <SavedSynthesisView currentProject={currentProject} onSelectQuery={loadQuery} />;
+        return <SavedSynthesisView projects={projects} onSelectQuery={(queryId) => runWhenIdle(() => { void handleSelectQuery(queryId); })} />;
       default:
         return <CurrentQueryView result={currentResult} />;
     }
@@ -174,7 +230,8 @@ function App() {
             return (
               <button
                 key={id}
-                onClick={() => setActiveNav(id)}
+                onClick={() => runWhenIdle(() => setActiveNav(id))}
+                disabled={isLoading}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 10,
                   width: '100%', padding: '9px 12px', borderRadius: 7,
@@ -194,13 +251,19 @@ function App() {
 
         {/* Sidebar footer */}
         <div style={{ padding: '12px 8px', borderTop: '1px solid var(--border)' }}>
-          <QueryHistoryPanel project={currentProject} currentQueryId={currentQueryId} onSelectQuery={loadQuery} />
+          <QueryHistoryPanel
+            project={currentProject}
+            currentQueryId={currentQueryId}
+            onSelectQuery={(queryId) => runWhenIdle(() => { void handleSelectQuery(queryId); })}
+            disableActions={isLoading}
+          />
           <button
-            onClick={() => {
+            onClick={() => runWhenIdle(() => {
               createProject();
               setError('');
               setActiveNav('current');
-            }}
+            })}
+            disabled={isLoading}
             style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', marginTop: 4, padding: '9px 12px', borderRadius: 7, border: '1px solid rgba(15,38,92,0.18)', background: 'rgba(15,38,92,0.06)', color: '#0f265c', cursor: 'pointer', justifyContent: 'center', fontSize: 11, fontWeight: 700, transition: 'all 0.15s' }}
           >
             <Plus size={12} />
@@ -208,6 +271,7 @@ function App() {
           </button>
           <StatusBar />
           <button
+            disabled={isLoading}
             style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', marginTop: 6, padding: '9px 12px', borderRadius: 7, border: 'none', background: 'transparent', color: 'var(--text-muted)', cursor: 'pointer', fontSize: 11, transition: 'all 0.15s' }}
           >
             <HelpCircle size={12} />
@@ -219,15 +283,54 @@ function App() {
       {/* Main area */}
       <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0, overflow: 'hidden' }}>
 
+        {isLoading && (
+          <div style={{ height: 4, background: 'rgba(15,38,92,0.1)', flexShrink: 0 }}>
+            <div style={{ height: '100%', width: `${((loadingStage + 1) / loadingStages.length) * 100}%`, background: 'linear-gradient(90deg,#0f265c,#425d95)', transition: 'width 0.35s ease' }} />
+          </div>
+        )}
+
         <header style={{ background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)', padding: '0 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 56, flexShrink: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <span style={{ fontSize: 12, fontWeight: 700, color: '#0f265c', letterSpacing: '0.04em' }}>BLUES</span>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{currentProject?.name || 'Project'}</span>
+            {projectNameEditing ? (
+              <input
+                value={projectNameDraft}
+                onChange={e => setProjectNameDraft(e.target.value)}
+                onBlur={submitProjectRename}
+                onKeyDown={e => {
+                  if (e.key === 'Enter') submitProjectRename();
+                  if (e.key === 'Escape') {
+                    setProjectNameDraft(currentProject?.name ?? 'Project');
+                    setProjectNameEditing(false);
+                  }
+                }}
+                autoFocus
+                style={{ fontSize: 11, padding: '3px 8px', borderRadius: 6, border: '1px solid var(--border)', background: '#fff', color: 'var(--text-primary)' }}
+              />
+            ) : (
+              <button
+                onClick={() => setProjectNameEditing(true)}
+                style={{ fontSize: 11, color: 'var(--text-muted)', border: 'none', background: 'transparent', cursor: 'pointer', padding: 0 }}
+                title="Click to edit project name"
+              >
+                {currentProject?.name || 'Project'}
+              </button>
+            )}
             <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>/</span>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{currentQuery?.query_text || 'No active query'}</span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{currentQuery?.query_text || 'New Query'}</span>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <button
+              onClick={() => runWhenIdle(() => {
+                clearCurrentQuery();
+                setError('');
+                setActiveNav('current');
+              })}
+              style={{ fontSize: 11, fontWeight: 700, color: '#0f265c', border: '1px solid rgba(15,38,92,0.2)', background: 'rgba(15,38,92,0.06)', borderRadius: 7, padding: '6px 10px', cursor: 'pointer' }}
+            >
+              New Query
+            </button>
             {backendOnline !== null && (
               <span style={{
                 display: 'flex', alignItems: 'center', gap: 5, fontSize: 11, fontWeight: 500,
@@ -245,21 +348,29 @@ function App() {
 
         <div ref={contentRef} style={{ flex: 1, overflowY: 'auto', padding: '26px 34px' }}>
           <div style={{ maxWidth: 960, margin: '0 auto' }}>
-            <div className="glass-card" style={{ overflow: 'hidden', marginBottom: 24 }}>
-              <div style={{ padding: '18px 22px' }}>
-                <FileUpload />
-                <div style={{ marginTop: 10 }}>
-                  <QueryForm onSubmit={handleSubmit} loading={loading} />
+            {activeNav === 'current' && (
+              <div className="glass-card" style={{ overflow: 'hidden', marginBottom: 24 }}>
+                <div style={{ padding: '18px 22px' }}>
+                  <FileUpload />
+                  <div style={{ marginTop: 10 }}>
+                    <QueryForm onSubmit={handleSubmit} loading={isLoading} />
+                  </div>
                 </div>
               </div>
-            </div>
+            )}
 
             <div style={{ minHeight: 540 }}>
-              {loading && <LoadingSpinner currentStage={loadingStage} stages={loadingStages} />}
+              {isLoading && <LoadingSpinner currentStage={loadingStage} stages={loadingStages} />}
 
               {error && <PipelineErrorCard error={error} onDismiss={() => setError('')} />}
 
-              {!loading && renderActiveView()}
+              {pausedActionsMessage && (
+                <div style={{ marginBottom: 14, border: '1px solid rgba(180,83,9,0.3)', background: 'rgba(180,83,9,0.08)', color: '#8a5300', borderRadius: 10, padding: '10px 12px', fontSize: 12, fontWeight: 600 }}>
+                  {pausedActionsMessage}
+                </div>
+              )}
+
+              {!isLoading && renderActiveView()}
             </div>
           </div>
         </div>

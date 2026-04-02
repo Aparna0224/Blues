@@ -1,5 +1,16 @@
-import { memo } from 'react';
-import { AlertCircle, Calendar, CheckCircle2, ChevronRight, FolderOpen, History, Sparkles, TriangleAlert } from 'lucide-react';
+import { memo, useMemo, useState } from 'react';
+import {
+  AlertCircle,
+  Calendar,
+  CheckCircle2,
+  ChevronRight,
+  FolderOpen,
+  History,
+  Sparkles,
+  TriangleAlert,
+  Trash2,
+  X,
+} from 'lucide-react';
 import type { QueryResponse } from '../types';
 import type { StoredQuery, WorkspaceProject } from '../state/workspace';
 import ResultsPanel from './ResultsPanel';
@@ -10,24 +21,30 @@ interface CurrentQueryViewProps {
 }
 
 interface XaiAnalysisViewProps {
-  queryHistory: StoredQuery[];
+  queries: StoredQuery[];
   currentQueryId: string | null;
+  activeQuery: StoredQuery | null;
   onSelectQuery: (queryId: string) => void;
 }
 
 interface ConflictMapViewProps {
   result: QueryResponse | null;
+  projectName: string;
+  queryText: string;
 }
 
 interface ProjectLibraryViewProps {
   projects: WorkspaceProject[];
   currentProjectId: string;
   onSwitchProject: (projectId: string) => void;
+  onRenameProject: (projectId: string, name: string) => void;
+  onDeleteProject: (projectId: string) => void;
   onSelectQuery: (queryId: string) => void;
+  disableActions?: boolean;
 }
 
 interface SavedSynthesisViewProps {
-  currentProject: WorkspaceProject | null;
+  projects: WorkspaceProject[];
   onSelectQuery: (queryId: string) => void;
 }
 
@@ -52,8 +69,8 @@ export const CurrentQueryView = memo(function CurrentQueryView({ result }: Curre
     return (
       <div className="glass-card min-h-[420px] flex items-center justify-center p-8 text-center">
         <div>
-          <p className="text-sm font-semibold text-slate-800">No active query yet</p>
-          <p className="text-xs mt-1 text-slate-500">Run a question to start your research workspace.</p>
+          <p className="text-sm font-semibold text-slate-800">Start a new query</p>
+          <p className="text-xs mt-1 text-slate-500">Use the input box to run analysis in this project workspace.</p>
         </div>
       </div>
     );
@@ -63,60 +80,83 @@ export const CurrentQueryView = memo(function CurrentQueryView({ result }: Curre
     <div className="grid grid-cols-[1fr_260px] gap-5 items-start">
       <ResultsPanel result={result} />
       <div className="sticky top-0">
-        <AnalysisHealthPanel result={result} />
+        <AnalysisHealthPanel result={result} showSummary={false} />
       </div>
     </div>
   );
 });
 
-export const XaiAnalysisView = memo(function XaiAnalysisView({ queryHistory, currentQueryId, onSelectQuery }: XaiAnalysisViewProps) {
+export const XaiAnalysisView = memo(function XaiAnalysisView({ queries, currentQueryId, activeQuery, onSelectQuery }: XaiAnalysisViewProps) {
+  const tracePretty = useMemo(() => {
+    if (!activeQuery?.trace) return null;
+    try {
+      return JSON.stringify(activeQuery.trace, null, 2);
+    } catch {
+      return String(activeQuery.trace);
+    }
+  }, [activeQuery]);
+
   return (
-    <div className="glass-card min-h-[420px] p-5">
+    <div className="glass-card min-h-[460px] p-5">
       <div className="flex items-center gap-2 mb-4">
         <History size={14} className="text-slate-700" />
-        <h3 className="text-sm font-semibold text-slate-900">Trace History</h3>
+        <h3 className="text-sm font-semibold text-slate-900">XAI Analysis (Project Scoped)</h3>
       </div>
 
-      {queryHistory.length === 0 ? (
-        <p className="text-xs text-slate-500">No traces recorded yet.</p>
-      ) : (
-        <div className="space-y-2">
-          {queryHistory.slice().reverse().map(item => {
-            const active = item.query_id === currentQueryId;
-            return (
-              <button
-                key={item.query_id}
-                onClick={() => onSelectQuery(item.query_id)}
-                className={`w-full text-left rounded-lg border p-3 transition ${active ? 'border-blue-900 bg-blue-50' : 'border-slate-200 bg-white hover:bg-slate-50'}`}
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <p className="text-sm font-medium text-slate-900">{item.query_text}</p>
-                  <ChevronRight size={14} className="text-slate-400 mt-0.5" />
-                </div>
-                <p className="text-[11px] text-slate-500 mt-1 flex items-center gap-1">
-                  <Calendar size={10} /> {formatDate(item.timestamp)}
-                </p>
-                <p className="text-[11px] text-slate-500 mt-1">
-                  Trace: {item.trace ? 'available' : 'not loaded'}
-                </p>
-              </button>
-            );
-          })}
+      <div className="grid grid-cols-[300px_1fr] gap-4 min-h-[360px]">
+        <div className="space-y-2 border-r border-slate-200 pr-3 overflow-auto max-h-[420px]">
+          {queries.length === 0 ? (
+            <p className="text-xs text-slate-500">No traces recorded in this project yet.</p>
+          ) : (
+            queries.slice().reverse().map(item => {
+              const active = item.query_id === currentQueryId;
+              return (
+                <button
+                  key={item.query_id}
+                  onClick={() => onSelectQuery(item.query_id)}
+                  className={`w-full text-left rounded-lg border p-3 transition ${active ? 'border-blue-900 bg-blue-50' : 'border-slate-200 bg-white hover:bg-slate-50'}`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-sm font-medium text-slate-900">{item.query_text}</p>
+                    <ChevronRight size={14} className="text-slate-400 mt-0.5" />
+                  </div>
+                  <p className="text-[11px] text-slate-500 mt-1 flex items-center gap-1">
+                    <Calendar size={10} /> {formatDate(item.timestamp)}
+                  </p>
+                  <p className="text-[11px] text-slate-500 mt-1">Trace: {item.trace ? 'available' : 'not available'}</p>
+                </button>
+              );
+            })
+          )}
         </div>
-      )}
+
+        <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 overflow-auto max-h-[420px]">
+          {!activeQuery ? (
+            <p className="text-sm text-slate-500">Select a query to inspect its trace.</p>
+          ) : !tracePretty ? (
+            <p className="text-sm text-slate-500">Trace not available</p>
+          ) : (
+            <>
+              <p className="text-xs font-semibold text-slate-700 mb-2">Trace for: {activeQuery.query_text}</p>
+              <pre className="text-[11px] leading-5 text-slate-700 whitespace-pre-wrap">{tracePretty}</pre>
+            </>
+          )}
+        </div>
+      </div>
     </div>
   );
 });
 
-export const ConflictMapView = memo(function ConflictMapView({ result }: ConflictMapViewProps) {
+export const ConflictMapView = memo(function ConflictMapView({ result, projectName, queryText }: ConflictMapViewProps) {
   const blocks = result ? extractConflictBlocks(result.grouped_answer) : [];
 
   return (
     <div className="glass-card min-h-[420px] p-5">
-      <div className="flex items-center gap-2 mb-4">
+      <div className="flex items-center gap-2 mb-1">
         <TriangleAlert size={14} className="text-amber-700" />
-        <h3 className="text-sm font-semibold text-slate-900">Conflict Map</h3>
+        <h3 className="text-sm font-semibold text-slate-900">Conflict Analysis — {queryText}</h3>
       </div>
+      <p className="text-xs text-slate-500 mb-4">Project: {projectName}</p>
 
       {!result ? (
         <p className="text-xs text-slate-500">Run a query to analyze cross-paper conflicts.</p>
@@ -140,9 +180,75 @@ export const ConflictMapView = memo(function ConflictMapView({ result }: Conflic
   );
 });
 
-export const ProjectLibraryView = memo(function ProjectLibraryView({ projects, currentProjectId, onSwitchProject, onSelectQuery }: ProjectLibraryViewProps) {
+function EditableProjectTitle({
+  project,
+  onSwitchProject,
+  onRenameProject,
+  disableActions,
+}: {
+  project: WorkspaceProject;
+  onSwitchProject: (projectId: string) => void;
+  onRenameProject: (projectId: string, name: string) => void;
+  disableActions?: boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [nameDraft, setNameDraft] = useState(project.name);
+
+  const submit = () => {
+    onRenameProject(project.id, nameDraft);
+    setEditing(false);
+  };
+
+  if (editing) {
+    return (
+      <input
+        value={nameDraft}
+        onChange={e => setNameDraft(e.target.value)}
+        onBlur={submit}
+        onKeyDown={e => {
+          if (e.key === 'Enter') submit();
+          if (e.key === 'Escape') {
+            setNameDraft(project.name);
+            setEditing(false);
+          }
+        }}
+        autoFocus
+        className="text-sm font-semibold text-slate-900 bg-white border border-slate-300 rounded px-2 py-1"
+      />
+    );
+  }
+
   return (
-    <div className="glass-card min-h-[420px] p-5">
+    <button
+      onClick={() => onSwitchProject(project.id)}
+      onDoubleClick={() => {
+        if (!disableActions) {
+          setEditing(true);
+          setNameDraft(project.name);
+        }
+      }}
+      className="text-sm font-semibold text-slate-900 hover:underline"
+      title="Double click to rename"
+      disabled={disableActions}
+    >
+      {project.name}
+    </button>
+  );
+}
+
+export const ProjectLibraryView = memo(function ProjectLibraryView({
+  projects,
+  currentProjectId,
+  onSwitchProject,
+  onRenameProject,
+  onDeleteProject,
+  onSelectQuery,
+  disableActions,
+}: ProjectLibraryViewProps) {
+  const [confirmDeleteProjectId, setConfirmDeleteProjectId] = useState<string | null>(null);
+
+  return (
+    <div className="glass-card min-h-[420px] p-5 relative">
       <div className="flex items-center gap-2 mb-4">
         <FolderOpen size={14} className="text-slate-700" />
         <h3 className="text-sm font-semibold text-slate-900">Project Library</h3>
@@ -151,13 +257,28 @@ export const ProjectLibraryView = memo(function ProjectLibraryView({ projects, c
       <div className="space-y-4">
         {projects.map(project => {
           const active = project.id === currentProjectId;
+          const isOnlyProject = projects.length === 1;
+
           return (
             <section key={project.id} className={`rounded-lg border p-3 ${active ? 'border-blue-900 bg-blue-50' : 'border-slate-200 bg-white'}`}>
               <div className="flex items-center justify-between gap-2">
-                <button onClick={() => onSwitchProject(project.id)} className="text-sm font-semibold text-slate-900 hover:underline">
-                  {project.name}
-                </button>
-                <span className="text-[11px] text-slate-500">{project.queries.length} queries</span>
+                <EditableProjectTitle
+                  project={project}
+                  onSwitchProject={onSwitchProject}
+                  onRenameProject={onRenameProject}
+                  disableActions={disableActions}
+                />
+                <div className="flex items-center gap-2">
+                  <span className="text-[11px] text-slate-500">{project.queries.length} queries</span>
+                  <button
+                    onClick={() => setConfirmDeleteProjectId(project.id)}
+                    className="text-red-600 hover:text-red-700 disabled:opacity-50"
+                    title={isOnlyProject ? 'At least one project must remain' : 'Delete project'}
+                    disabled={disableActions || isOnlyProject}
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
               </div>
 
               <div className="mt-2 space-y-1">
@@ -166,6 +287,7 @@ export const ProjectLibraryView = memo(function ProjectLibraryView({ projects, c
                     key={query.query_id}
                     onClick={() => onSelectQuery(query.query_id)}
                     className="w-full text-left text-xs text-slate-700 hover:text-slate-900 rounded px-2 py-1 hover:bg-slate-100"
+                    disabled={disableActions}
                   >
                     • {query.query_text}
                   </button>
@@ -176,12 +298,44 @@ export const ProjectLibraryView = memo(function ProjectLibraryView({ projects, c
           );
         })}
       </div>
+
+      {confirmDeleteProjectId && (
+        <div className="absolute inset-0 bg-black/25 flex items-center justify-center p-4">
+          <div className="bg-white rounded-xl border border-slate-200 shadow-lg max-w-sm w-full p-4">
+            <div className="flex items-start justify-between gap-2 mb-2">
+              <p className="text-sm font-semibold text-slate-900">Delete project?</p>
+              <button onClick={() => setConfirmDeleteProjectId(null)} className="text-slate-500"><X size={14} /></button>
+            </div>
+            <p className="text-xs text-slate-600 mb-3">This will remove the project and all stored queries from local workspace history.</p>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setConfirmDeleteProjectId(null)} className="px-3 py-1.5 text-xs border border-slate-300 rounded">Cancel</button>
+              <button
+                onClick={() => {
+                  onDeleteProject(confirmDeleteProjectId);
+                  setConfirmDeleteProjectId(null);
+                }}
+                className="px-3 py-1.5 text-xs bg-red-600 text-white rounded"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 });
 
-export const SavedSynthesisView = memo(function SavedSynthesisView({ currentProject, onSelectQuery }: SavedSynthesisViewProps) {
-  const syntheses = (currentProject?.queries ?? []).filter(q => Boolean(q.result.summary));
+export const SavedSynthesisView = memo(function SavedSynthesisView({ projects, onSelectQuery }: SavedSynthesisViewProps) {
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const syntheses = projects.flatMap(project =>
+    project.queries
+      .filter(q => Boolean(q.result.summary))
+      .map(q => ({
+        ...q,
+        projectName: project.name,
+      })),
+  );
 
   return (
     <div className="glass-card min-h-[420px] p-5">
@@ -191,16 +345,24 @@ export const SavedSynthesisView = memo(function SavedSynthesisView({ currentProj
       </div>
 
       {syntheses.length === 0 ? (
-        <p className="text-xs text-slate-500">No saved summaries in this project yet.</p>
+        <p className="text-xs text-slate-500">No saved summaries yet.</p>
       ) : (
         <div className="space-y-3">
           {syntheses.slice().reverse().map(item => (
             <article key={item.query_id} className="rounded-lg border border-violet-200 bg-violet-50 p-4">
               <button onClick={() => onSelectQuery(item.query_id)} className="text-left w-full">
                 <p className="text-sm font-semibold text-slate-900">{item.query_text}</p>
-                <p className="text-[11px] text-slate-500 mt-1">{formatDate(item.timestamp)}</p>
-                <p className="text-sm text-slate-700 mt-2 line-clamp-4">{item.result.summary}</p>
+                <p className="text-[11px] text-slate-500 mt-1">{item.projectName} • {formatDate(item.timestamp)}</p>
               </button>
+              <div className="mt-2 border-t border-violet-200 pt-2">
+                <p className={`text-sm text-slate-700 ${expanded[item.query_id] ? '' : 'line-clamp-4'}`}>{item.result.summary}</p>
+                <button
+                  onClick={() => setExpanded(prev => ({ ...prev, [item.query_id]: !prev[item.query_id] }))}
+                  className="text-xs text-violet-700 font-semibold mt-2"
+                >
+                  {expanded[item.query_id] ? 'Collapse summary' : 'Expand full summary'}
+                </button>
+              </div>
             </article>
           ))}
         </div>
@@ -213,9 +375,10 @@ interface QueryHistoryPanelProps {
   project: WorkspaceProject | null;
   currentQueryId: string | null;
   onSelectQuery: (queryId: string) => void;
+  disableActions?: boolean;
 }
 
-export const QueryHistoryPanel = memo(function QueryHistoryPanel({ project, currentQueryId, onSelectQuery }: QueryHistoryPanelProps) {
+export const QueryHistoryPanel = memo(function QueryHistoryPanel({ project, currentQueryId, onSelectQuery, disableActions }: QueryHistoryPanelProps) {
   const queries = project?.queries ?? [];
 
   return (
@@ -230,6 +393,7 @@ export const QueryHistoryPanel = memo(function QueryHistoryPanel({ project, curr
                 key={query.query_id}
                 onClick={() => onSelectQuery(query.query_id)}
                 className={`w-full text-left rounded px-2 py-1.5 text-[11px] ${active ? 'bg-blue-100 text-blue-900 font-semibold' : 'text-slate-700 hover:bg-slate-100'}`}
+                disabled={disableActions}
               >
                 {query.query_text}
               </button>

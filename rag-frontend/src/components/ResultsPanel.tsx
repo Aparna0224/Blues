@@ -7,6 +7,7 @@ import type { QueryResponse } from '../types';
 import VerificationCard from './VerificationCard';
 import PapersTable from './PapersTable';
 import { downloadReport, extractErrorMessage } from '../services/api';
+import { useWorkspace } from '../state/workspace';
 
 interface Props { result: QueryResponse; }
 
@@ -103,6 +104,7 @@ const subCard: React.CSSProperties = { ...card, overflow: 'hidden', marginBottom
 
 export default function ResultsPanel({ result }: Props) {
   const r = result;
+  const { currentProject, currentQuery } = useWorkspace();
   const parsed = useMemo(() => parseGroupedAnswer(r.grouped_answer), [r.grouped_answer]);
   const [openSubq, setOpenSubq] = useState<Record<number, boolean>>({});
   const [downloading, setDownloading] = useState<'pdf' | 'md' | null>(null);
@@ -114,7 +116,11 @@ export default function ResultsPanel({ result }: Props) {
     setDownloadError('');
     setDownloading(format);
     try {
-      await downloadReport(r.execution_id, format);
+      await downloadReport(r.execution_id, format, {
+        projectName: currentProject?.name,
+        queryText: currentQuery?.query_text || r.query,
+        timestamp: currentQuery?.timestamp,
+      });
     } catch (err: unknown) {
       setDownloadError(extractErrorMessage(err));
     } finally {

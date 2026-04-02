@@ -24,8 +24,8 @@ class ConflictDetector:
 
     METHOD_TERMS: Set[str] = {"method", "methodology", "approach", "pipeline", "framework"}
     RESULT_TERMS: Set[str] = {"result", "results", "experiment", "evaluation", "performance"}
-    TOPIC_SIMILARITY_THRESHOLD = 0.70
-    CLAIM_SIMILARITY_THRESHOLD = 0.50
+    TOPIC_SIMILARITY_THRESHOLD = 0.35
+    CLAIM_SIMILARITY_THRESHOLD = 0.65
 
     @classmethod
     def _tokenize(cls, text: str) -> Set[str]:
@@ -100,6 +100,22 @@ class ConflictDetector:
         return overlap
 
     @classmethod
+    def _has_incompatible_result(cls, a_text: str, b_text: str) -> bool:
+        a = (a_text or "").lower()
+        b = (b_text or "").lower()
+        opposite_pairs = [
+            ("higher", "lower"),
+            ("increase", "decrease"),
+            ("outperform", "underperform"),
+            ("effective", "ineffective"),
+            ("improved", "worse"),
+        ]
+        for left, right in opposite_pairs:
+            if (left in a and right in b) or (right in a and left in b):
+                return True
+        return False
+
+    @classmethod
     def detect_conflicts(cls, units: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Pairwise conflict detection over evidence units."""
         conflicts: List[Dict[str, Any]] = []
@@ -117,11 +133,13 @@ class ConflictDetector:
 
             topic_similarity = cls._topic_similarity(a, b)
             claim_similarity = cls._claim_similarity(a_claim, b_claim)
+            polarity_conflict = cls._has_polarity_conflict(a_claim, b_claim)
+            incompatible = cls._has_incompatible_result(a_claim, b_claim)
 
             # Required conflict rule: similar topic but divergent claim.
             if topic_similarity <= cls.TOPIC_SIMILARITY_THRESHOLD:
                 continue
-            if claim_similarity >= cls.CLAIM_SIMILARITY_THRESHOLD:
+            if not polarity_conflict and not incompatible and claim_similarity >= cls.CLAIM_SIMILARITY_THRESHOLD:
                 continue
 
             conflict_type = cls._classify_type(a.get("section", ""), b.get("section", ""))
@@ -136,7 +154,8 @@ class ConflictDetector:
                 "claim_similarity": claim_similarity,
                 "explanation": (
                     f"Both papers discuss overlapping concepts (topic_similarity={topic_similarity:.2f}) "
-                    f"but diverge in claims (claim_similarity={claim_similarity:.2f})."
+                    f"but diverge in claims (claim_similarity={claim_similarity:.2f}); "
+                    f"this indicates incompatible interpretation of similar evidence."
                 ),
                 "pair": (i, j),
             })
@@ -196,6 +215,28 @@ class ConflictDetector:
         }
 
     @classmethod
+    def no_conflict_explanation(cls, units: List[Dict[str, Any]]) -> str:
+        if not units:
+            return "No conflicts detected because no comparable cross-paper claims were available."
+
+        section_groups: Dict[str, int] = {}
+        for u in units:
+            sec = str(u.get("section", "unknown") or "unknown")
+            section_groups[sec] = section_groups.get(sec, 0) + 1
+
+        if len(section_groups) > 1:
+            sections = ", ".join(sorted(section_groups.keys())[:4])
+            return (
+                "No conflicts detected because the compared claims primarily address different aspects of the problem "
+                f"across sections ({sections}) rather than reporting incompatible outcomes."
+            )
+
+        return (
+            "No conflicts detected because cross-paper claims are directionally aligned on overlapping topics and "
+            "do not present incompatible results."
+        )
+
+    @classmethod
     def grounded_comparison_statements(
         cls,
         units: List[Dict[str, Any]],
@@ -233,57 +274,76 @@ class ConflictDetector:
                 "support_indices": [],
             }
 
-        deep_terms = {"cnn", "deep", "neural", "transformer", "resnet", "unet", "u-net"}
-        classical_terms = {"threshold", "otsu", "morphological", "watershed", "color", "hsv", "cmyk", "rgb"}
+        deep_terms = {"cnn", "deep", "neural", "transformer", "resnet", "unet", "u-net", "bert"}
+        classical_terms = {"threshold", "otsu", "morphological", "watershed", "color", "hsv", "cmyk", "rgb", "rule-based"}
+        manual_terms = {"manual", "microscopy", "expert", "visual"}
 
-        deep_ids: List[int] = []
-        classical_ids: List[int] = []
-        mixed_ids: List[int] = []
+        method_groups: Dict[str, List[int]] = {
+            "deep learning": [],
+            "rule-based image processing": [],
+            "manual analysis": [],
+            "hybrid or unspecified computational methods": [],
+        }
         for i, unit in enumerate(units):
             text = f"{unit.get('claim', '')} {unit.get('text', '')}".lower()
             has_deep = any(t in text for t in deep_terms)
             has_classical = any(t in text for t in classical_terms)
-            if has_deep and not has_classical:
-                deep_ids.append(i)
+            has_manual = any(t in text for t in manual_terms)
+
+            if has_manual and not has_deep and not has_classical:
+                method_groups["manual analysis"].append(i)
+            elif has_deep and not has_classical:
+                method_groups["deep learning"].append(i)
             elif has_classical and not has_deep:
-                classical_ids.append(i)
+                method_groups["rule-based image processing"].append(i)
             else:
-                mixed_ids.append(i)
+                method_groups["hybrid or unspecified computational methods"].append(i)
 
-        # Agreement signal from high-overlap claim pairs.
-        agreements = 0
-        for i, j in combinations(range(len(units)), 2):
-            if units[i].get("paper_id") == units[j].get("paper_id"):
-                continue
-            c1 = units[i].get("claim") or units[i].get("text") or ""
-            c2 = units[j].get("claim") or units[j].get("text") or ""
-            if cls._concept_overlap(c1, c2) >= 0.45 and cls._claim_similarity(c1, c2) >= 0.50:
-                agreements += 1
+        non_empty = {k: v for k, v in method_groups.items() if v}
+        ordered = sorted(non_empty.items(), key=lambda kv: len(kv[1]), reverse=True)
 
-        dominant = "mixed approaches"
-        dominant_ids = mixed_ids
-        if len(deep_ids) > len(classical_ids) and len(deep_ids) >= len(mixed_ids):
-            dominant = "deep learning approaches"
-            dominant_ids = deep_ids
-        elif len(classical_ids) > len(deep_ids) and len(classical_ids) >= len(mixed_ids):
-            dominant = "classical image-processing approaches"
-            dominant_ids = classical_ids
+        approach_lines = []
+        for name, ids in ordered[:3]:
+            purpose = "to automate detection and improve reproducibility"
+            sample_text = " ".join((units[idx].get("claim") or units[idx].get("text") or "") for idx in ids[:2]).lower()
+            if any(t in sample_text for t in ["segment", "segmentation", "delineat"]):
+                purpose = "to segment and delineate relevant structures"
+            elif any(t in sample_text for t in ["classif", "predict", "label"]):
+                purpose = "to classify outcomes from extracted features"
+            elif any(t in sample_text for t in ["screen", "diagnos", "triage"]):
+                purpose = "to support screening and diagnostic workflows"
+            if name == "hybrid or unspecified computational methods":
+                approach_lines.append(f"hybrid or unspecified computational pipelines are used {purpose}")
+            else:
+                approach_lines.append(f"{name} methods are used {purpose}")
 
-        trends_text = (
-            "A trend from color-space/thresholding pipelines toward deep learning models is visible"
-            if deep_ids and classical_ids
-            else "The available evidence does not show a strong transition trend across approach families"
-        )
+        conflicts = cls.detect_conflicts(units)
+        if conflicts:
+            difference_text = (
+                "Papers diverge where comparable claims report incompatible outcomes or opposite effectiveness "
+                "under similar topical conditions"
+            )
+        else:
+            difference_text = cls.no_conflict_explanation(units)
+
+        if method_groups["deep learning"] and method_groups["rule-based image processing"]:
+            trend_text = "The evidence indicates an ongoing shift from handcrafted rule-based pipelines toward learned models in recent studies"
+        elif method_groups["deep learning"]:
+            trend_text = "Recent evidence emphasizes learned models as the primary implementation strategy"
+        elif method_groups["rule-based image processing"]:
+            trend_text = "Classical image-processing pipelines remain central in the currently retrieved literature"
+        elif method_groups["manual analysis"]:
+            trend_text = "Manual analytical procedures remain a reference baseline for interpretation and validation"
+        else:
+            trend_text = "The retrieved evidence emphasizes implementation details more than temporal methodological shifts"
 
         paragraph = (
-            f"Across the selected papers, the dominant pattern is {dominant}. "
-            f"Several studies agree on core segmentation goals and report directionally similar claims "
-            f"({agreements} cross-paper agreement links detected). "
-            f"At the same time, differences appear in implementation details and reported outcomes across papers. "
-            f"{trends_text}."
+            f"Across the selected papers, {'; '.join(approach_lines)}. "
+            f"These approaches differ in how they trade off interpretability, annotation demand, and robustness to dataset variability. "
+            f"{difference_text}. {trend_text}."
         )
 
-        support_indices = sorted(set(dominant_ids + deep_ids + classical_ids + mixed_ids))[:8]
+        support_indices = sorted({idx for ids in non_empty.values() for idx in ids})[:8]
         return {
             "paragraph": paragraph,
             "support_indices": support_indices,

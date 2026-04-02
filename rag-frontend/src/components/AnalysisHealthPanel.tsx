@@ -4,6 +4,7 @@ import type { QueryResponse } from '../types';
 
 interface Props {
     result: QueryResponse;
+    showSummary?: boolean;
 }
 
 // Generate a deterministic-ish heatmap grid from the paper data
@@ -47,7 +48,7 @@ function HeatmapGrid({ seed }: { seed: number }) {
     );
 }
 
-export default function AnalysisHealthPanel({ result }: Props) {
+export default function AnalysisHealthPanel({ result, showSummary = true }: Props) {
     const [summaryOpen, setSummaryOpen] = useState(false);
 
     const papersCount = result.papers_found.length;
@@ -137,7 +138,7 @@ export default function AnalysisHealthPanel({ result }: Props) {
             </div>
 
             {/* ── AI Research Summary ────────────────────── */}
-            {result.summary && (
+            {showSummary && result.summary && (
                 <div className="glass-card overflow-hidden animate-fade-in">
                     <button
                         onClick={() => setSummaryOpen(!summaryOpen)}

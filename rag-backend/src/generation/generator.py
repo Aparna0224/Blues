@@ -434,26 +434,47 @@ class AnswerGenerator:
         if not units:
             return "The available evidence is insufficient to draw a reliable conclusion for this sub-question."
 
-        ranked = sorted(
-            units,
-            key=lambda u: (u.get("final_score", 0.0), u.get("confidence", 0.0)),
-            reverse=True,
-        )
-        top = ranked[:2]
-        claim_fragments = []
-        for u in top:
-            claim = (u.get("claim") or u.get("text") or "").strip()
-            if claim:
-                claim_fragments.append(claim.rstrip(".") + ".")
+        joined = " ".join((u.get("claim") or "") + " " + (u.get("text") or "") for u in units).lower()
+        subq = (sub_question or "").lower()
 
-        base = " ".join(claim_fragments)
-        if not base:
-            base = "The evidence points to a consistent pattern across the selected papers."
+        method_labels: List[str] = []
+        if any(k in joined for k in ["cnn", "deep learning", "neural", "resnet", "transformer"]):
+            method_labels.append("deep-learning models")
+        if any(k in joined for k in ["otsu", "threshold", "morphological", "watershed", "hsv", "rgb", "cmyk"]):
+            method_labels.append("rule-based image-processing methods")
+        if any(k in joined for k in ["manual", "microscopy", "expert review"]):
+            method_labels.append("manual analytical workflows")
+        if not method_labels:
+            method_labels.append("evidence-grounded computational approaches")
 
-        confidence_label = self._confidence_band(sum(u.get("confidence", 0.0) for u in top) / max(1, len(top)))
+        purpose = "to improve reliability and automation for the target task"
+        if any(k in subq for k in ["vulnerab", "risk", "threat"]):
+            purpose = "to identify and characterize vulnerability patterns"
+        elif any(k in subq for k in ["detect", "mitigat", "prevent"]):
+            purpose = "to support accurate detection and practical mitigation decisions"
+        elif any(k in subq for k in ["dataset", "benchmark", "corpus"]):
+            purpose = "to curate benchmark resources and improve evaluation coverage"
+        elif any(k in joined for k in ["detect", "detection", "recogniz", "identify"]):
+            purpose = "to improve detection and recognition of relevant patterns"
+        elif any(k in joined for k in ["classif", "prediction", "predict"]):
+            purpose = "to strengthen classification and predictive performance"
+
+        limitation = "The evidence remains heterogeneous because papers evaluate different datasets and operating conditions."
+        has_conflict = len(ConflictDetector.detect_conflicts(units)) > 0
+        if has_conflict:
+            limitation = "Some claims are not directly compatible across papers, indicating method-dependent conclusions under similar topics."
+        elif len(method_labels) > 1:
+            limitation = "The methods are complementary rather than identical, so performance differences mainly reflect design trade-offs rather than direct contradiction."
+
+        confidence_label = self._confidence_band(
+            sum(float(u.get("confidence", 0.0) or 0.0) for u in units[:4]) / max(1, min(4, len(units)))
+        ).lower()
+        methods_text = ", ".join(method_labels[:-1]) + (" and " + method_labels[-1] if len(method_labels) > 1 else method_labels[0])
+
         return (
-            f"Based on the selected evidence, {base} "
-            f"Overall support for this sub-question is {confidence_label.lower()} confidence."
+            f"For this sub-question, the evidence indicates that {methods_text} are used {purpose}. "
+            f"Across papers, these methods generally support the same research objective while varying in implementation and evidence strength. "
+            f"{limitation} Overall support for this conclusion is {confidence_label} confidence."
         )
 
     def _build_evidence_unit(
@@ -697,6 +718,16 @@ class AnswerGenerator:
             reverse=True,
         )
 
+        embedder = None
+        chunk_embeddings: List[Any] = []
+        try:
+            from src.embeddings.embedder import get_shared_embedder
+            embedder = get_shared_embedder()
+            chunk_embeddings = [embedder.embed_text(c.get("text", "")) for c in chunks]
+        except Exception:
+            embedder = None
+            chunk_embeddings = []
+
         # Generate answer for each sub-question
         for i, sub_q in enumerate(sub_questions, 1):
             output += f"🔹 Sub-question: {sub_q}\n\n"
@@ -722,27 +753,35 @@ class AnswerGenerator:
                     dedup_assigned[cid] = chunk
             assigned_chunks = list(dedup_assigned.values())
 
-            # Per-subquestion filtering (no global pre-filtering).
+            # Per-subquestion re-scoring over ALL retrieved chunks (no global pre-filtering).
+            rescored_chunks: List[Dict[str, Any]] = []
+            if embedder and chunk_embeddings:
+                sq_emb = embedder.embed_text(sub_q)
+                for idx, chunk in enumerate(chunks):
+                    sq_score = float(np.dot(chunk_embeddings[idx], sq_emb))
+                    rescored_chunks.append({
+                        **chunk,
+                        "subquery_similarity": sq_score,
+                        "sub_question": sub_q,
+                    })
+            else:
+                for chunk in chunks:
+                    sq_score = self._lexical_similarity(sub_q, chunk.get("text", ""))
+                    rescored_chunks.append({
+                        **chunk,
+                        "subquery_similarity": float(sq_score),
+                        "sub_question": sub_q,
+                    })
+
             filtered_chunks = [
-                {
-                    **chunk,
-                    "subquery_similarity": float(
-                        chunk.get(
-                            "subquery_similarity",
-                            chunk.get("query_similarity", chunk.get("similarity_score", 0.0)),
-                        )
-                        or 0.0
-                    ),
-                }
-                for chunk in assigned_chunks
-                if float(
-                    chunk.get(
-                        "subquery_similarity",
-                        chunk.get("query_similarity", chunk.get("similarity_score", 0.0)),
-                    )
-                    or 0.0
-                ) >= self.SUBQUERY_MATCH_THRESHOLD
+                chunk for chunk in rescored_chunks
+                if float(chunk.get("subquery_similarity", 0.0) or 0.0) >= self.SUBQUERY_MATCH_THRESHOLD
             ]
+
+            filtered_chunks.sort(
+                key=lambda c: float(c.get("subquery_similarity", 0.0) or 0.0),
+                reverse=True,
+            )
 
             fallback_triggered = False
             if not filtered_chunks:
@@ -754,14 +793,9 @@ class AnswerGenerator:
                     cid = str(chunk.get("chunk_id", ""))
                     if not cid:
                         continue
-                    sq_score = float(
-                        (chunk.get("subq_scores") or {}).get(
-                            sub_q,
-                            max(
-                                float(chunk.get("similarity_score", 0.0) or 0.0),
-                                self._lexical_similarity(sub_q, chunk.get("text", "")),
-                            ),
-                        )
+                    sq_score = max(
+                        float(chunk.get("similarity_score", 0.0) or 0.0),
+                        self._lexical_similarity(sub_q, chunk.get("text", "")),
                     )
                     fallback_chunks.append({
                         **chunk,
@@ -771,11 +805,12 @@ class AnswerGenerator:
                 filtered_chunks = fallback_chunks
 
             print(
-                f"SubQ: {sub_q} → assigned: {len(assigned_chunks)} → after filter: {len(filtered_chunks)} "
+                f"SubQ: {sub_q} → assigned: {len(assigned_chunks)} → rescored: {len(rescored_chunks)} → after filter: {len(filtered_chunks)} "
                 f"→ fallback: {fallback_triggered}"
             )
             subq_data["debug"] = {
                 "assigned": len(assigned_chunks),
+                "rescored": len(rescored_chunks),
                 "after_filter": len(filtered_chunks),
                 "fallback": fallback_triggered,
             }
@@ -916,7 +951,7 @@ class AnswerGenerator:
                 output += f"Strength: {first['strength']:.2f}\n\n"
                 output += f"Explanation: {first.get('explanation','')[:320]}\n\n"
             else:
-                output += "No significant conflicts detected because cross-paper claims are either aligned in direction or not sufficiently contradictory within shared topics.\n\n"
+                output += f"{ConflictDetector.no_conflict_explanation(units)}\n\n"
                 subq_data["conflicts"] = []
 
             summary = ConflictDetector.comparison_summary(units, conflicts)
@@ -925,21 +960,8 @@ class AnswerGenerator:
 
             output += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             output += "📊 Comparison Summary\n"
-            output += f"- Supporting evidence clusters: {summary['supporting_clusters']}\n"
-            output += f"- Conflicting clusters: {summary['conflicting_clusters']}\n"
-            output += f"- Consensus level: {summary['consensus_level']}\n"
-            output += "\nCross-paper synthesis:\n"
             output += f"{comparison['paragraph']}\n"
             subq_data["comparison_text"] = comparison.get("paragraph", "")
-            if comparison.get("support_indices"):
-                refs = ", ".join([f"u{idx+1}" for idx in comparison["support_indices"]])
-                output += f"Supports: {refs}\n"
-            if grounded:
-                output += "- Grounded synthesis statements:\n"
-                for st in grounded[:3]:
-                    refs = [f"u{idx+1}" for idx in st.get("support_indices", [])[:5]]
-                    ref_text = ", ".join(refs) if refs else "none"
-                    output += f"  • {st.get('text', '').strip()} (supports: {ref_text})\n"
 
             output += "\n🧩 Final Synthesis\n"
             sub_conclusion = self._build_subquestion_conclusion(sub_q, units)

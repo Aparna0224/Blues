@@ -20,6 +20,7 @@ interface WorkspaceState {
   currentProjectId: string;
   currentQueryId: string | null;
   currentResult: QueryResponse | null;
+  isLoading: boolean;
   queryHistory: StoredQuery[];
   projects: WorkspaceProject[];
 }
@@ -29,6 +30,11 @@ interface WorkspaceContextValue extends WorkspaceState {
   currentQuery: StoredQuery | null;
   createProject: (name?: string) => void;
   switchProject: (projectId: string) => void;
+  renameProject: (projectId: string, name: string) => void;
+  deleteProject: (projectId: string) => void;
+  clearCurrentQuery: () => void;
+  updateQueryTrace: (queryId: string, trace: unknown | null) => void;
+  setIsLoading: (loading: boolean) => void;
   addQueryRecord: (record: StoredQuery) => void;
   loadQuery: (queryId: string) => void;
 }
@@ -49,6 +55,7 @@ function createInitialState(): WorkspaceState {
     currentProjectId: project.id,
     currentQueryId: null,
     currentResult: null,
+    isLoading: false,
     queryHistory: [],
     projects: [project],
   };
@@ -81,6 +88,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         currentProjectId: existingProject.id,
         currentQueryId: currentQuery?.query_id ?? null,
         currentResult: currentQuery?.result ?? null,
+        isLoading: false,
       };
     } catch {
       return createInitialState();
@@ -117,6 +125,73 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         currentResult: latest?.result ?? null,
       };
     });
+  };
+
+  const renameProject = (projectId: string, name: string) => {
+    const nextName = name.trim();
+    if (!nextName) return;
+    setState(prev => ({
+      ...prev,
+      projects: prev.projects.map(project =>
+        project.id === projectId ? { ...project, name: nextName } : project,
+      ),
+    }));
+  };
+
+  const deleteProject = (projectId: string) => {
+    setState(prev => {
+      if (prev.projects.length <= 1) {
+        return prev;
+      }
+
+      const remainingProjects = prev.projects.filter(project => project.id !== projectId);
+      const removedQueryIds = new Set(
+        prev.projects.find(p => p.id === projectId)?.queries.map(q => q.query_id) ?? [],
+      );
+
+      const activeProjectDeleted = prev.currentProjectId === projectId;
+      const fallbackProject = activeProjectDeleted
+        ? remainingProjects[0]
+        : (remainingProjects.find(p => p.id === prev.currentProjectId) ?? remainingProjects[0]);
+
+      const fallbackQuery = fallbackProject?.queries[fallbackProject.queries.length - 1] ?? null;
+
+      return {
+        ...prev,
+        projects: remainingProjects,
+        queryHistory: prev.queryHistory.filter(q => !removedQueryIds.has(q.query_id)),
+        currentProjectId: fallbackProject?.id ?? prev.currentProjectId,
+        currentQueryId: fallbackQuery?.query_id ?? null,
+        currentResult: fallbackQuery?.result ?? null,
+      };
+    });
+  };
+
+  const clearCurrentQuery = () => {
+    setState(prev => ({
+      ...prev,
+      currentQueryId: null,
+      currentResult: null,
+    }));
+  };
+
+  const updateQueryTrace = (queryId: string, trace: unknown | null) => {
+    setState(prev => ({
+      ...prev,
+      projects: prev.projects.map(project => ({
+        ...project,
+        queries: project.queries.map(query =>
+          query.query_id === queryId ? { ...query, trace } : query,
+        ),
+      })),
+      queryHistory: prev.queryHistory.map(query =>
+        query.query_id === queryId ? { ...query, trace } : query,
+      ),
+    }));
+  };
+
+  const setIsLoading = (loading: boolean) => {
+    setState(prev => ({ ...prev, isLoading: loading }));
   };
 
   const addQueryRecord = (record: StoredQuery) => {
@@ -162,6 +237,11 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       currentQuery,
       createProject,
       switchProject,
+      renameProject,
+  deleteProject,
+  clearCurrentQuery,
+  updateQueryTrace,
+      setIsLoading,
       addQueryRecord,
       loadQuery,
     };
