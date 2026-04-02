@@ -1,16 +1,24 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle, HelpCircle, Plus, Wifi, WifiOff,
   Compass, Library, ShieldAlert, Bookmark
 } from 'lucide-react';
 import QueryForm from './components/QueryForm';
 import FileUpload from './components/FileUpload';
-import ResultsPanel from './components/ResultsPanel';
 import LoadingSpinner from './components/LoadingSpinner';
-import AnalysisHealthPanel from './components/AnalysisHealthPanel';
 import StatusBar from './components/StatusBar';
-import { runQuery, getStatus, extractErrorMessage } from './services/api';
-import type { QueryRequest, QueryResponse } from './types';
+import {
+  ConflictMapView,
+  CurrentQueryView,
+  PipelineErrorCard,
+  ProjectLibraryView,
+  QueryHistoryPanel,
+  SavedSynthesisView,
+  XaiAnalysisView,
+} from './components/WorkspacePanels';
+import { runQuery, getStatus, getTrace, extractErrorMessage } from './services/api';
+import type { QueryRequest } from './types';
+import { useWorkspace } from './state/workspace';
 
 const NAV_ITEMS = [
   { id: 'current', label: 'Current Query', icon: Compass },
@@ -21,11 +29,33 @@ const NAV_ITEMS = [
 ];
 
 function App() {
-  const [result, setResult] = useState<QueryResponse | null>(null);
+  const {
+    currentProject,
+    currentQuery,
+    currentResult,
+    currentQueryId,
+    queryHistory,
+    projects,
+    createProject,
+    switchProject,
+    addQueryRecord,
+    loadQuery,
+  } = useWorkspace();
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [backendOnline, setBackendOnline] = useState<boolean | null>(null);
-  const [activeNav, setActiveNav] = useState('analysis');
+  const [activeNav, setActiveNav] = useState('current');
+  const [loadingStage, setLoadingStage] = useState(0);
+
+  const contentRef = useRef<HTMLDivElement>(null);
+  const previousNavRef = useRef(activeNav);
+  const scrollByTabRef = useRef<Record<string, number>>({});
+
+  const loadingStages = useMemo(
+    () => ['Stage 1 → Planning', 'Stage 2 → Retrieval', 'Stage 3 → Evidence', 'Stage 4 → Verification', 'Stage 5 → Summary'],
+    [],
+  );
 
   useEffect(() => {
     getStatus()
@@ -33,17 +63,86 @@ function App() {
       .catch(() => setBackendOnline(false));
   }, []);
 
+  useEffect(() => {
+    const container = contentRef.current;
+    if (!container) return;
+
+    const previous = previousNavRef.current;
+    scrollByTabRef.current[previous] = container.scrollTop;
+
+    const nextScroll = scrollByTabRef.current[activeNav] ?? 0;
+    requestAnimationFrame(() => {
+      if (contentRef.current) {
+        contentRef.current.scrollTop = nextScroll;
+      }
+    });
+
+    previousNavRef.current = activeNav;
+  }, [activeNav]);
+
   const handleSubmit = async (req: QueryRequest) => {
     setLoading(true);
+    setLoadingStage(0);
     setError('');
-    setResult(null);
+
+    const stageTicker = window.setInterval(() => {
+      setLoadingStage(prev => (prev < loadingStages.length - 1 ? prev + 1 : prev));
+    }, 2500);
+
     try {
       const data = await runQuery(req);
-      setResult(data);
+
+      let trace: unknown | null = null;
+      try {
+        trace = await getTrace(data.execution_id);
+      } catch {
+        trace = null;
+      }
+
+      addQueryRecord({
+        query_id: data.execution_id,
+        query_text: req.query,
+        result: data,
+        trace,
+        timestamp: new Date().toISOString(),
+      });
+      setActiveNav('current');
     } catch (err: unknown) {
       setError(extractErrorMessage(err));
     } finally {
+      window.clearInterval(stageTicker);
       setLoading(false);
+      setLoadingStage(loadingStages.length - 1);
+    }
+  };
+
+  const renderActiveView = () => {
+    switch (activeNav) {
+      case 'current':
+        return <CurrentQueryView result={currentResult} />;
+      case 'analysis':
+        return (
+          <XaiAnalysisView
+            queryHistory={queryHistory}
+            currentQueryId={currentQueryId}
+            onSelectQuery={loadQuery}
+          />
+        );
+      case 'conflicts':
+        return <ConflictMapView result={currentResult} />;
+      case 'library':
+        return (
+          <ProjectLibraryView
+            projects={projects}
+            currentProjectId={currentProject?.id ?? ''}
+            onSwitchProject={switchProject}
+            onSelectQuery={loadQuery}
+          />
+        );
+      case 'saved':
+        return <SavedSynthesisView currentProject={currentProject} onSelectQuery={loadQuery} />;
+      default:
+        return <CurrentQueryView result={currentResult} />;
     }
   };
 
@@ -95,8 +194,13 @@ function App() {
 
         {/* Sidebar footer */}
         <div style={{ padding: '12px 8px', borderTop: '1px solid var(--border)' }}>
+          <QueryHistoryPanel project={currentProject} currentQueryId={currentQueryId} onSelectQuery={loadQuery} />
           <button
-            onClick={() => { setResult(null); setError(''); }}
+            onClick={() => {
+              createProject();
+              setError('');
+              setActiveNav('current');
+            }}
             style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%', marginTop: 4, padding: '9px 12px', borderRadius: 7, border: '1px solid rgba(15,38,92,0.18)', background: 'rgba(15,38,92,0.06)', color: '#0f265c', cursor: 'pointer', justifyContent: 'center', fontSize: 11, fontWeight: 700, transition: 'all 0.15s' }}
           >
             <Plus size={12} />
@@ -118,9 +222,9 @@ function App() {
         <header style={{ background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)', padding: '0 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 56, flexShrink: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <span style={{ fontSize: 12, fontWeight: 700, color: '#0f265c', letterSpacing: '0.04em' }}>BLUES</span>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Synthesis</span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{currentProject?.name || 'Project'}</span>
             <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>/</span>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{result?.query || 'Neural Signal Analysis'}</span>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{currentQuery?.query_text || 'No active query'}</span>
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -139,7 +243,7 @@ function App() {
           </div>
         </header>
 
-        <div style={{ flex: 1, overflowY: 'auto', padding: '26px 34px' }}>
+        <div ref={contentRef} style={{ flex: 1, overflowY: 'auto', padding: '26px 34px' }}>
           <div style={{ maxWidth: 960, margin: '0 auto' }}>
             <div className="glass-card" style={{ overflow: 'hidden', marginBottom: 24 }}>
               <div style={{ padding: '18px 22px' }}>
@@ -150,29 +254,13 @@ function App() {
               </div>
             </div>
 
-            {loading && <LoadingSpinner />}
+            <div style={{ minHeight: 540 }}>
+              {loading && <LoadingSpinner currentStage={loadingStage} stages={loadingStages} />}
 
-            {error && (
-              <div className="animate-fade-in" style={{ display: 'flex', alignItems: 'flex-start', gap: 12, background: 'rgba(248,113,113,0.08)', border: '1px solid rgba(248,113,113,0.2)', borderRadius: 12, padding: '14px 18px', marginBottom: 24 }}>
-                <AlertTriangle size={16} style={{ color: '#f87171', flexShrink: 0, marginTop: 1 }} />
-                <div>
-                  <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: '#f87171' }}>Pipeline Error</p>
-                  <p style={{ margin: '2px 0 0', fontSize: 13, color: '#fca5a5' }}>{error}</p>
-                </div>
-                <button onClick={() => setError('')} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#f87171', marginLeft: 'auto' }}>✕</button>
-              </div>
-            )}
+              {error && <PipelineErrorCard error={error} onDismiss={() => setError('')} />}
 
-            {result && !loading && (
-              <div className="animate-fade-in" style={{ display: 'grid', gridTemplateColumns: '1fr 260px', gap: 20, alignItems: 'start' }}>
-                <div>
-                  <ResultsPanel result={result} />
-                </div>
-                <div style={{ position: 'sticky', top: 0 }}>
-                  <AnalysisHealthPanel result={result} />
-                </div>
-              </div>
-            )}
+              {!loading && renderActiveView()}
+            </div>
           </div>
         </div>
       </div>

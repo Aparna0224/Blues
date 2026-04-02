@@ -50,9 +50,9 @@ export default function FileUpload() {
         onDrop={onDrop}
         onClick={() => inputRef.current?.click()}
         style={{
-          border: `1.5px dashed ${dragging ? 'var(--teal)' : 'rgba(255,255,255,0.12)'}`,
-          borderRadius: 10, padding: '14px 20px', cursor: 'pointer', textAlign: 'center',
-          background: dragging ? 'rgba(94,234,212,0.05)' : 'rgba(255,255,255,0.02)',
+          border: `2px dashed ${dragging ? '#0f265c' : 'rgba(15,23,42,0.22)'}`,
+          borderRadius: 12, padding: '24px 20px', cursor: 'pointer', textAlign: 'center',
+          background: dragging ? 'rgba(15, 38, 92, 0.08)' : 'rgba(15, 38, 92, 0.03)',
           transition: 'all 0.15s',
         }}
       >
@@ -64,14 +64,14 @@ export default function FileUpload() {
           </div>
         ) : (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10 }}>
-            <div style={{ width: 32, height: 32, borderRadius: 8, background: 'rgba(255,255,255,0.06)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-              <Upload size={14} style={{ color: 'var(--text-muted)' }} />
+            <div style={{ width: 38, height: 38, borderRadius: 10, background: 'rgba(15,38,92,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <Upload size={16} style={{ color: '#0f265c' }} />
             </div>
             <div style={{ textAlign: 'left' }}>
-              <p style={{ margin: 0, fontSize: 13, fontWeight: 500, color: 'var(--text-secondary)' }}>
+              <p style={{ margin: 0, fontSize: 14, fontWeight: 600, color: 'var(--text-primary)' }}>
                 Upload a paper <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}>(optional)</span>
               </p>
-              <p style={{ margin: 0, fontSize: 10, color: 'var(--text-muted)' }}>
+              <p style={{ margin: 0, fontSize: 11, color: 'var(--text-muted)' }}>
                 Drop a PDF or click — it will be chunked, embedded, and indexed
               </p>
             </div>

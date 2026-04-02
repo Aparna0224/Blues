@@ -19,7 +19,7 @@ export default function QueryForm({ onSubmit, loading }: Props) {
   const [filterYearMin, setFilterYearMin] = useState('');
   const [filterYearMax, setFilterYearMax] = useState('');
   const [filterTitleContains, setFilterTitleContains] = useState('');
-  const [filterSource, _setFilterSource] = useState('');
+  const [filterSource, setFilterSource] = useState('');
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -178,6 +178,7 @@ export default function QueryForm({ onSubmit, loading }: Props) {
                 { label: 'Category', isSelect: false, placeholder: 'e.g., rag', val: filterCategory, set: setFilterCategory },
                 { label: 'Tags', isSelect: false, placeholder: 'comma-separated', val: filterTags, set: setFilterTags },
                 { label: 'Title contains', isSelect: false, placeholder: 'keyword', val: filterTitleContains, set: setFilterTitleContains },
+                { label: 'Source', isSelect: false, placeholder: 'journal or database', val: filterSource, set: setFilterSource },
               ].map(({ label, isSelect, val, set, placeholder, options, optVals }) => (
                 <div key={label}>
                   <label style={{ display: 'block', fontSize: 10, fontWeight: 500, color: 'var(--text-muted)', marginBottom: 4 }}>{label}</label>
