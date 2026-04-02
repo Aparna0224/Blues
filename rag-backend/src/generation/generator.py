@@ -29,6 +29,19 @@ class AnswerGenerator:
     SUBQUERY_MATCH_THRESHOLD = 0.50
     SUBQUERY_STRONG_MATCH_THRESHOLD = 0.60
     FALLBACK_TOP_K_PER_SUBQ = 2
+    INTENT_KEYWORDS = {
+        "dataset": ["dataset", "datasets", "benchmark", "corpus", "collection", "labeled", "labeling"],
+        "detection": ["detect", "detection", "identify", "mitigation", "prevent", "exploit"],
+        "types": ["type", "types", "category", "taxonomy", "class", "cwe"],
+        "methodology": ["method", "approach", "framework", "pipeline", "technique", "construction"],
+    }
+    BACKGROUND_DRIFT_TERMS = [
+        "iot",
+        "internet of things",
+        "general overview",
+        "broad introduction",
+        "blockchain basics",
+    ]
     
     def __init__(self):
         self._last_analysis: Dict[str, Any] = {}
@@ -277,6 +290,44 @@ class AnswerGenerator:
         if any(k in sq for k in ["challenge", "limitation", "issue", "risk"]):
             return 1.20 if ("discussion" in sec or "conclusion" in sec) else 1.0
         return 1.0
+
+    def _infer_intent(self, sub_question: str, provided_intent: str = "") -> str:
+        intent = (provided_intent or "").strip().lower()
+        if intent in self.INTENT_KEYWORDS:
+            return intent
+        sq = (sub_question or "").lower()
+        for k, words in self.INTENT_KEYWORDS.items():
+            if any(w in sq for w in words):
+                return k
+        return "methodology"
+
+    def _chunk_matches_intent(self, chunk_text: str, intent: str) -> bool:
+        if not chunk_text:
+            return False
+        text = chunk_text.lower()
+        keywords = self.INTENT_KEYWORDS.get(intent, [])
+        if not keywords:
+            return True
+
+        # Require explicit dataset grounding for dataset-focused sub-questions.
+        if intent == "dataset":
+            has_dataset_keyword = any(w in text for w in keywords)
+            has_only_detection = any(w in text for w in self.INTENT_KEYWORDS.get("detection", [])) and not has_dataset_keyword
+            return has_dataset_keyword and not has_only_detection
+
+        return any(w in text for w in keywords)
+
+    def _is_background_drift(self, sub_question: str, chunk_text: str, user_level: str) -> bool:
+        level = (user_level or "auto").lower()
+        if level not in {"intermediate", "advanced"}:
+            return False
+
+        sq = (sub_question or "").lower()
+        if any(k in sq for k in ["overview", "introduction", "basic", "what is", "iot"]):
+            return False
+
+        text = (chunk_text or "").lower()
+        return any(term in text for term in self.BACKGROUND_DRIFT_TERMS)
 
     @staticmethod
     def _simplify_text(text: str) -> str:
@@ -681,6 +732,8 @@ class AnswerGenerator:
         """
         main_question = plan.get("main_question", "")
         sub_questions = plan.get("sub_questions", [])
+        resolved_user_level = (plan.get("resolved_user_level") or "auto").lower()
+        subquestion_intents = plan.get("subquestion_intents") or {}
         
         if not chunks:
             return "I could not find relevant information to answer your question."
@@ -731,8 +784,10 @@ class AnswerGenerator:
         # Generate answer for each sub-question
         for i, sub_q in enumerate(sub_questions, 1):
             output += f"🔹 Sub-question: {sub_q}\n\n"
+            subq_intent = self._infer_intent(sub_q, subquestion_intents.get(sub_q, ""))
             subq_data: Dict[str, Any] = {
                 "question": sub_q,
+                "intent": subq_intent,
                 "debug": {},
                 "papers": [],
                 "conflicts": [],
@@ -776,6 +831,8 @@ class AnswerGenerator:
             filtered_chunks = [
                 chunk for chunk in rescored_chunks
                 if float(chunk.get("subquery_similarity", 0.0) or 0.0) >= self.SUBQUERY_MATCH_THRESHOLD
+                and self._chunk_matches_intent(chunk.get("text", ""), subq_intent)
+                and not self._is_background_drift(sub_q, chunk.get("text", ""), resolved_user_level)
             ]
 
             filtered_chunks.sort(
@@ -804,6 +861,9 @@ class AnswerGenerator:
                     })
                 filtered_chunks = fallback_chunks
 
+            if filtered_chunks:
+                output += f"Intent focus: {subq_intent} | User level: {resolved_user_level}\n\n"
+
             print(
                 f"SubQ: {sub_q} → assigned: {len(assigned_chunks)} → rescored: {len(rescored_chunks)} → after filter: {len(filtered_chunks)} "
                 f"→ fallback: {fallback_triggered}"
@@ -813,6 +873,8 @@ class AnswerGenerator:
                 "rescored": len(rescored_chunks),
                 "after_filter": len(filtered_chunks),
                 "fallback": fallback_triggered,
+                "intent": subq_intent,
+                "user_level": resolved_user_level,
             }
             
             if not filtered_chunks:

@@ -9,6 +9,7 @@ interface Props {
 
 export default function QueryForm({ onSubmit, loading }: Props) {
   const [query, setQuery] = useState('');
+  const [userLevel, setUserLevel] = useState<'auto' | 'beginner' | 'intermediate' | 'advanced'>('auto');
   const [numDocs, setNumDocs] = useState(10);
   const [mode, setMode] = useState<'dynamic' | 'cached'>('dynamic');
   const [includeSummary, setIncludeSummary] = useState(true);
@@ -43,6 +44,7 @@ export default function QueryForm({ onSubmit, loading }: Props) {
       num_documents: numDocs,
       mode,
       include_summary: includeSummary,
+      user_level: userLevel,
       filters: Object.keys(filters).length ? filters : undefined,
     });
   };
@@ -129,6 +131,26 @@ export default function QueryForm({ onSubmit, loading }: Props) {
         >
           <Settings2 size={14} />
         </button>
+      </div>
+
+      <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: '200px 1fr', gap: 10, alignItems: 'center' }}>
+        <label style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 600 }}>Research Level</label>
+        <div>
+          <select
+            value={userLevel}
+            onChange={e => setUserLevel(e.target.value as 'auto' | 'beginner' | 'intermediate' | 'advanced')}
+            disabled={loading}
+            style={{ ...inputBase, fontSize: 12, maxWidth: 220 }}
+          >
+            <option value="auto">Auto</option>
+            <option value="beginner">Beginner</option>
+            <option value="intermediate">Intermediate</option>
+            <option value="advanced">Advanced</option>
+          </select>
+          <p style={{ margin: '6px 0 0', fontSize: 11, color: 'var(--text-muted)' }}>
+            Auto infers depth from your query; choose manually for more control.
+          </p>
+        </div>
       </div>
 
       {/* ── Advanced panel ── */}

@@ -74,6 +74,7 @@ class QueryRequest(BaseModel):
     num_documents: int = Field(default=15, ge=1, le=50, description="Number of documents to retrieve")
     mode: str = Field(default="dynamic", pattern="^(dynamic|cached)$", description="Retrieval mode")
     include_summary: bool = Field(default=True, description="Include LLM summary (Stage 5)")
+    user_level: Optional[str] = Field(default="auto", description="User level for API request")
     filters: Optional[dict] = Field(default=None, description="Optional metadata filters for retrieval")
 
 
@@ -159,7 +160,7 @@ async def run_query(req: QueryRequest):
 
     try:
         t0 = _time.perf_counter()
-        plan = planner.plan(req.query)
+        plan = planner.plan(req.query, req.user_level or "auto")
         planning_ms = round((_time.perf_counter() - t0) * 1000, 1)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Planning failed: {e}")

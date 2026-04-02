@@ -5,6 +5,7 @@ export interface QueryRequest {
   num_documents: number;
   mode: 'dynamic' | 'cached';
   include_summary: boolean;
+  user_level?: 'auto' | 'beginner' | 'intermediate' | 'advanced';
   filters?: QueryFilters | null;
 }
 
