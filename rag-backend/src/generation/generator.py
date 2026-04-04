@@ -262,6 +262,244 @@ class AnswerGenerator:
                 return canonical.title()
         return "unknown"
 
+    # ─── STEP 3: Section Validation (NEW METHODS) ────────────────────────────────
+    
+    METHODOLOGY_ALLOWED_SECTIONS = {
+        "methodology", "method", "methods", "approach", "system design",
+        "experimental setup", "implementation", "framework", "pipeline", "architecture"
+    }
+    
+    IMPORTANT_FIELDS = [
+        "contributions", "dataset", "methodology", "models", "metrics", "limitations"
+    ]
+
+    def _infer_section_from_content(self, text: str, labeled_section: str) -> str:
+        """Infer TRUE section using headers + linguistic cues."""
+        if not text:
+            return self._normalize_section(labeled_section)
+        
+        text_lower = text.lower()
+        
+        # Check for explicit section headers in text
+        if any(h in text_lower for h in ["introduction", "background", "motivation"]):
+            return "Introduction"
+        if any(h in text_lower for h in ["methodology", "method", "approach", "system design", "experimental setup"]):
+            return "Methodology"
+        if any(h in text_lower for h in ["dataset", "data collection", "data source"]):
+            return "Methodology"
+        if any(h in text_lower for h in ["results", "evaluation", "experiment", "performance", "findings"]):
+            return "Results"
+        if any(h in text_lower for h in ["discussion", "analysis"]):
+            return "Discussion"
+        if any(h in text_lower for h in ["conclusion", "future work"]):
+            return "Conclusion"
+        
+        # Linguistic cues for methodology
+        methodology_cues = [
+            "we propose", "our approach", "our method", "algorithm", "procedure",
+            "step-by-step", "pipeline", "architecture", "framework", "constructed"
+        ]
+        if any(cue in text_lower for cue in methodology_cues):
+            return "Methodology"
+        
+        # Linguistic cues for results
+        results_cues = [
+            "accuracy of", "achieved", "performance", "evaluation", "benchmark",
+            "compared to", "metric", "score", "result shows", "experimental result"
+        ]
+        if any(cue in text_lower for cue in results_cues):
+            return "Results"
+        
+        # Linguistic cues for introduction
+        intro_cues = [
+            "problem", "motivation", "important", "challenge", "why", "background"
+        ]
+        if any(cue in text_lower for cue in intro_cues):
+            return "Introduction"
+        
+        # Fallback to labeled section
+        return self._normalize_section(labeled_section)
+
+    def _resolve_true_section(self, chunk: Dict[str, Any]) -> tuple[str, bool]:
+        """
+        Resolve TRUE section using labeled + inferred.
+        Returns (true_section, was_corrected).
+        """
+        labeled_section = self._normalize_section(
+            chunk.get("metadata", {}).get("section") or chunk.get("section", "unknown")
+        )
+        text = chunk.get("text", "")
+        inferred_section = self._infer_section_from_content(text, labeled_section)
+        
+        was_corrected = labeled_section.lower() != inferred_section.lower()
+        return inferred_section, was_corrected
+
+    def _is_methodology_subquestion(self, subq: str) -> bool:
+        """Detect if sub-question is methodology-focused."""
+        sq = (subq or "").lower()
+        methodology_keywords = [
+            "method", "approach", "how", "technique", "algorithm", "procedure",
+            "framework", "pipeline", "system design", "architecture"
+        ]
+        return any(k in sq for k in methodology_keywords)
+
+    def _section_allowed_for_subquestion(self, section: str, subq: str) -> bool:
+        """Strict section gating: methodology sub-questions only accept methodology sections."""
+        if not self._is_methodology_subquestion(subq):
+            # Non-methodology sub-questions accept any section
+            return True
+        
+        # Methodology sub-questions ONLY accept methodology-related sections
+        section_lower = (section or "unknown").lower()
+        return any(allowed in section_lower for allowed in self.METHODOLOGY_ALLOWED_SECTIONS)
+
+    def _extract_heading_from_chunk(self, chunk: Dict[str, Any]) -> str:
+        """Extract nearest heading from chunk metadata."""
+        metadata = chunk.get("metadata") or {}
+        heading = (
+            metadata.get("heading") or
+            metadata.get("subheading") or
+            metadata.get("nearest_heading") or
+            ""
+        )
+        return heading.strip()
+
+    def _extract_important_points(self, chunk: Dict[str, Any]) -> Dict[str, Any]:
+        """Extract 6 important fields from chunk."""
+        text = chunk.get("text", "").lower()
+        
+        result = {
+            "contributions": [],
+            "dataset": [],
+            "methodology": [],
+            "models": [],
+            "metrics": [],
+            "limitations": []
+        }
+        
+        # Extract contributions
+        if any(w in text for w in ["propose", "introduce", "present", "novel", "contribution"]):
+            result["contributions"].append(chunk.get("text", "")[:100])
+        
+        # Extract dataset references
+        if any(w in text for w in ["dataset", "benchmark", "corpus", "data source", "collection"]):
+            result["dataset"].append(chunk.get("text", "")[:100])
+        
+        # Extract methodology
+        if any(w in text for w in ["method", "approach", "algorithm", "procedure", "pipeline"]):
+            result["methodology"].append(chunk.get("text", "")[:100])
+        
+        # Extract model references
+        if any(w in text for w in ["model", "network", "architecture", "framework"]):
+            result["models"].append(chunk.get("text", "")[:100])
+        
+        # Extract metrics/performance
+        if any(w in text for w in ["accuracy", "f1", "score", "metric", "performance", "evaluation"]):
+            result["metrics"].append(chunk.get("text", "")[:100])
+        
+        # Extract limitations
+        if any(w in text for w in ["limitation", "challenge", "future work", "gap", "drawback"]):
+            result["limitations"].append(chunk.get("text", "")[:100])
+        
+        return result
+
+    def _merge_paper_evidence(self, units: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """
+        Consolidate all evidence units by paper.
+        Returns: {paper_id: {paper_id, title, sections, important_sections, traceable_citations}}
+        """
+        by_paper: Dict[str, Dict[str, Any]] = {}
+        
+        for unit in units:
+            paper_id = unit.get("paper_id", "unknown")
+            if paper_id not in by_paper:
+                by_paper[paper_id] = {
+                    "paper_id": paper_id,
+                    "paper_title": unit.get("paper_title", "Unknown"),
+                    "paper_year": unit.get("paper_year", "N/A"),
+                    "sections": set(),
+                    "important_sections": {},
+                    "traceable_citations": [],
+                }
+            
+            section = unit.get("section", "unknown")
+            by_paper[paper_id]["sections"].add(section)
+            
+            # Track important points
+            if "important_points" in unit:
+                for field in self.IMPORTANT_FIELDS:
+                    if field not in by_paper[paper_id]["important_sections"]:
+                        by_paper[paper_id]["important_sections"][field] = []
+                    points = unit.get("important_points", {}).get(field, [])
+                    by_paper[paper_id]["important_sections"][field].extend(points)
+            
+            # Build traceable citation
+            traceable = {
+                "paper_title": unit.get("paper_title", "Unknown"),
+                "section": section,
+                "heading": unit.get("nearest_heading", ""),
+                "location": f"sentences {unit.get('location_start', 1)}–{unit.get('location_end', 1)}",
+                "text": unit.get("text", ""),
+                "claim": unit.get("claim", "")
+            }
+            by_paper[paper_id]["traceable_citations"].append(traceable)
+        
+        # Convert sets to lists
+        for paper_id in by_paper:
+            by_paper[paper_id]["sections"] = list(by_paper[paper_id]["sections"])
+        
+        return by_paper
+
+    def _quality_gate(self, merged_evidence: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Pre-output validation.
+        Returns: {status, issues, gaps}
+        """
+        issues = []
+        gaps = []
+        
+        if not merged_evidence:
+            return {
+                "status": "rejected",
+                "issues": ["No evidence units found"],
+                "gaps": ["Complete absence of retrieved evidence"]
+            }
+        
+        # Check section coverage (should span multiple sections)
+        all_sections = set()
+        for paper_data in merged_evidence.values():
+            all_sections.update(paper_data.get("sections", []))
+        
+        if len(all_sections) < 2:
+            gaps.append(f"Low section coverage: only {len(all_sections)} section(s) represented")
+        
+        # Check paper diversity
+        num_papers = len(merged_evidence)
+        if num_papers < 2:
+            gaps.append(f"Low paper diversity: only {num_papers} paper(s)")
+        
+        # Check for missing traceability
+        for paper_id, paper_data in merged_evidence.items():
+            if not paper_data.get("traceable_citations"):
+                issues.append(f"Paper {paper_id}: missing traceability")
+        
+        # Check for duplicate papers (shouldn't happen with merge, but check anyway)
+        titles = [p.get("paper_title", "") for p in merged_evidence.values()]
+        if len(titles) != len(set(titles)):
+            issues.append("Duplicate papers detected in output")
+        
+        status = "accepted" if not issues and len(all_sections) >= 2 else "accepted_with_warnings"
+        if issues:
+            status = "rejected"
+        
+        return {
+            "status": status,
+            "issues": issues,
+            "gaps": gaps if gaps else None,
+            "section_coverage": list(all_sections),
+            "paper_count": num_papers
+        }
+
     @staticmethod
     def _lexical_similarity(a: str, b: str) -> float:
         ta = {
@@ -560,8 +798,16 @@ class AnswerGenerator:
         )
 
         metadata = chunk.get("metadata") or {}
-        section = self._normalize_section(metadata.get("section") or chunk.get("section", "unknown"))
-        section_weight = self._section_weight(sub_question, section)
+        labeled_section = self._normalize_section(metadata.get("section") or chunk.get("section", "unknown"))
+        
+        # STEP 3: Resolve TRUE section with correction tracking
+        true_section, section_corrected = self._resolve_true_section(chunk)
+        
+        # STEP 3: Apply strict section gating
+        if not self._section_allowed_for_subquestion(true_section, sub_question):
+            return None
+        
+        section_weight = self._section_weight(sub_question, true_section)
 
         confidence = max(
             0.0,
@@ -580,6 +826,10 @@ class AnswerGenerator:
             ),
         )
 
+        # Extract traceability metadata
+        nearest_heading = self._extract_heading_from_chunk(chunk)
+        important_points = self._extract_important_points(chunk)
+
         return {
             "chunk_id": chunk.get("chunk_id", ""),
             "paper_id": chunk.get("paper_id", ""),
@@ -587,7 +837,10 @@ class AnswerGenerator:
             "paper_year": chunk.get("paper_year", "N/A"),
             "paper_doi": self._resolve_paper_doi(chunk),
             "paper_link": self._resolve_paper_link(chunk),
-            "section": section,
+            "section": true_section,
+            "section_corrected": section_corrected,
+            "labeled_section": labeled_section,
+            "nearest_heading": nearest_heading,
             "location_start": sentence_start,
             "location_end": sentence_end,
             "relevance": similarity_score,
@@ -599,6 +852,7 @@ class AnswerGenerator:
             "confidence_band": self._confidence_band(confidence),
             "text": snippet,
             "claim": evidence_sentence or snippet,
+            "important_points": important_points,
         }
     
     def generate_answer(self, query: str, retrieved_chunks: List[Dict[str, Any]]) -> str:
@@ -925,6 +1179,22 @@ class AnswerGenerator:
                     dedup_map[key] = u
             units = list(dedup_map.values())
 
+            # STEP 6: Consolidate evidence by paper
+            merged_evidence = self._merge_paper_evidence(units)
+            
+            # STEP 8: Quality gate before output
+            quality_check = self._quality_gate(merged_evidence)
+            if quality_check["status"] == "rejected":
+                output += f"⚠️ Quality Gate REJECTED: {quality_check.get('issues', ['Unknown issue'])}\n\n"
+                subq_data["mini_summary"] = f"Evidence rejected by quality gate: {quality_check.get('issues', ['Unknown issue'])}"
+                analysis_data["sub_questions"].append(subq_data)
+                continue
+            
+            if quality_check.get("gaps"):
+                for gap in quality_check["gaps"]:
+                    output += f"⚠️ Coverage Gap: {gap}\n"
+                output += "\n"
+
             grouped: Dict[str, Dict[str, List[Dict[str, Any]]]] = {}
             for unit in units:
                 key = f"{unit['paper_title']} ({unit['paper_year']})"
@@ -963,6 +1233,13 @@ class AnswerGenerator:
                         paper_units.append(unit)
                         output += f"[{idx}] Section: {section_name}\n"
                         output += f"Location: sentences {unit['location_start']}–{unit['location_end']}\n"
+                        
+                        # Add traceability metadata with section correction flag
+                        if unit.get("section_corrected"):
+                            output += f"[⚠️ Section auto-corrected from: {unit.get('labeled_section', 'unknown')}]\n"
+                        if unit.get("nearest_heading"):
+                            output += f"[Heading: {unit.get('nearest_heading')}]\n"
+                        
                         output += (
                             f"Relevance: {unit['relevance']:.2f} | "
                             f"SubQ Similarity: {unit['subquery_similarity']:.2f} | "
@@ -983,6 +1260,36 @@ class AnswerGenerator:
                     "evidence_units": paper_units,
                 })
                 output += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            
+            # STEP 7: Output structured evidence blocks
+            output += "## Evidence by Paper (Merged, Structured)\n\n"
+            for paper_id, paper_data in merged_evidence.items():
+                output += f"### {paper_data['paper_title']} ({paper_data['paper_year']})\n"
+                output += f"**Sections represented:** {', '.join(paper_data.get('sections', []))}\n\n"
+                
+                if paper_data.get("traceable_citations"):
+                    output += f"**Key evidence points:**\n"
+                    for i, citation in enumerate(paper_data["traceable_citations"][:3], 1):
+                        output += f"\n{i}. **Section:** {citation['section']}\n"
+                        if citation.get("heading"):
+                            output += f"   **Heading:** {citation['heading']}\n"
+                        output += f"   **Location:** {citation['location']}\n"
+                        output += f"   **Evidence:** \"{citation['claim'][:150]}...\"\n"
+                output += "\n"
+            
+            # Output traceable citations
+            output += "## Traceable Citations\n\n"
+            for paper_id, paper_data in merged_evidence.items():
+                for citation in paper_data["traceable_citations"]:
+                    output += f"[{paper_data['paper_title']} | {citation['section']} | {citation.get('heading', 'N/A')} | {citation['location']}]\n"
+                    output += f"\"{citation['text']}\"\n\n"
+            
+            # Output missing evidence / retrieval gaps if any
+            if quality_check.get("gaps"):
+                output += "## Missing Evidence / Retrieval Gaps\n\n"
+                for gap in quality_check["gaps"]:
+                    output += f"- {gap}\n"
+                output += "\n"
 
             conflicts = ConflictDetector.detect_conflicts(units)
             output += "⚠️ Cross-Paper Conflict Analysis\n\n"
