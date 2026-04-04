@@ -8,20 +8,35 @@ from src.config import Config
 
 
 class FAISSVectorStore:
-    """Manage FAISS index for semantic search."""
+    """Manage FAISS index for semantic search (singleton)."""
     
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
     def __init__(self):
+        if hasattr(self, '_initialized') and self._initialized:
+            return
         self.index = None
         self.dimension = Config.EMBEDDING_DIMENSION
-        self.index_path = Config.FAISS_INDEX_PATH
+        # Resolve index path relative to the rag-backend directory
+        raw_path = Config.FAISS_INDEX_PATH
+        if not os.path.isabs(raw_path):
+            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            raw_path = os.path.join(base_dir, raw_path)
+        self.index_path = raw_path
         self._initialize_index()
+        self._initialized = True
     
     def _initialize_index(self):
         """Initialize FAISS index."""
         try:
             if os.path.exists(self.index_path):
                 self.load_index()
-                print(f"✓ Loaded FAISS index from {self.index_path}")
+                print(f"✓ Loaded FAISS index from {self.index_path} ({self.index.ntotal} vectors)")
             else:
                 # Create new index with IndexFlatIP (Inner Product for cosine similarity)
                 self.index = faiss.IndexFlatIP(self.dimension)

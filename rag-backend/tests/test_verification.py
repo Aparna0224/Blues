@@ -406,6 +406,53 @@ class TestVerificationAgent:
         assert vi["evidence"] == []
         assert vi["total_chunks_retrieved"] == 0
 
+    def test_build_verification_input_skips_below_threshold(self, agent):
+        """Chunks flagged below evidence threshold should not be included for scoring."""
+        chunks = [
+            {
+                "text": "Relevant chunk",
+                "evidence_sentence": "Relevant claim",
+                "similarity_score": 0.82,
+                "evidence_score": 0.79,
+                "paper_id": "p1",
+                "paper_title": "Paper A",
+                "paper_year": 2024,
+                "evidence_below_threshold": False,
+            },
+            {
+                "text": "Weak chunk",
+                "evidence_sentence": "Weak claim",
+                "similarity_score": 0.9,
+                "evidence_score": 0.3,
+                "paper_id": "p2",
+                "paper_title": "Paper B",
+                "paper_year": 2023,
+                "evidence_below_threshold": True,
+            },
+        ]
+
+        vi = agent.build_verification_input("test", {"sub_questions": []}, chunks)
+        assert len(vi["evidence"]) == 1
+        assert vi["evidence"][0]["paper_id"] == "p1"
+
+    def test_build_verification_input_uses_conservative_effective_score(self, agent):
+        """Effective similarity should use min(chunk_similarity, evidence_score)."""
+        chunks = [
+            {
+                "text": "Chunk",
+                "evidence_sentence": "Sentence",
+                "similarity_score": 0.86,
+                "evidence_score": 0.62,
+                "paper_id": "p1",
+                "paper_title": "Paper A",
+                "paper_year": 2024,
+            }
+        ]
+
+        vi = agent.build_verification_input("test", {"sub_questions": []}, chunks)
+        assert len(vi["evidence"]) == 1
+        assert abs(vi["evidence"][0]["similarity_score"] - 0.62) < 1e-9
+
     # =================================================================
     # 14. format_verification_output
     # =================================================================

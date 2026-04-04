@@ -30,6 +30,36 @@ class Config:
     
     # Retrieval Settings
     TOP_K = int(os.getenv("TOP_K", 5))
+    RETRIEVAL_MIN_SIMILARITY = float(os.getenv("RETRIEVAL_MIN_SIMILARITY", "0.50"))
+    DYNAMIC_ABSTRACT_MIN_SIMILARITY = float(os.getenv("DYNAMIC_ABSTRACT_MIN_SIMILARITY", "0.45"))
+    SUBQUESTION_ASSIGN_THRESHOLD = float(os.getenv("SUBQUESTION_ASSIGN_THRESHOLD", "0.45"))
+    EVIDENCE_MIN_SIMILARITY = float(os.getenv("EVIDENCE_MIN_SIMILARITY", "0.55"))
+    EVIDENCE_KEYWORD_MIN_OVERLAP = int(os.getenv("EVIDENCE_KEYWORD_MIN_OVERLAP", "1"))
+    MIN_UNIQUE_PAPERS_FOR_CLAIMS = int(os.getenv("MIN_UNIQUE_PAPERS_FOR_CLAIMS", "2"))
+    KEYWORD_MIN_OVERLAP = int(os.getenv("KEYWORD_MIN_OVERLAP", "2"))
+    FILTER_QUESTION_SENTENCES = os.getenv("FILTER_QUESTION_SENTENCES", "True").lower() == "true"
+    ENABLE_DOMAIN_KEYWORD_GATE = os.getenv("ENABLE_DOMAIN_KEYWORD_GATE", "False").lower() == "true"
+    DOMAIN_KEYWORD_MIN_OVERLAP = int(os.getenv("DOMAIN_KEYWORD_MIN_OVERLAP", "1"))
+    DOMAIN_KEYWORDS = [
+        term.strip().lower()
+        for term in os.getenv(
+            "DOMAIN_KEYWORDS",
+            "rag,retrieval,augmentation,context,grounding,assistant,research,query,documents",
+        ).split(",")
+        if term.strip()
+    ]
+    
+    # Hybrid Retrieval Settings (BM25 + Semantic via RRF)
+    HYBRID_RETRIEVAL_ENABLED = os.getenv("HYBRID_RETRIEVAL_ENABLED", "True").lower() == "true"
+    RRF_K = int(os.getenv("RRF_K", "60"))
+    BM25_WEIGHT = float(os.getenv("BM25_WEIGHT", "0.4"))
+    SEMANTIC_WEIGHT = float(os.getenv("SEMANTIC_WEIGHT", "0.6"))
+    BM25_TOP_K = int(os.getenv("BM25_TOP_K", "20"))
+    SOFT_FILTER_KEYWORD_PENALTY = float(os.getenv("SOFT_FILTER_KEYWORD_PENALTY", "0.85"))
+    SOFT_FILTER_DOMAIN_PENALTY = float(os.getenv("SOFT_FILTER_DOMAIN_PENALTY", "0.85"))
+    SOFT_FILTER_LOW_SEMANTIC_PENALTY = float(os.getenv("SOFT_FILTER_LOW_SEMANTIC_PENALTY", "0.7"))
+    SOFT_FILTER_LOW_SEMANTIC_THRESHOLD = float(os.getenv("SOFT_FILTER_LOW_SEMANTIC_THRESHOLD", "0.35"))
+    MIN_SCORE_THRESHOLD = float(os.getenv("MIN_SCORE_THRESHOLD", "0.005"))
     
     # OpenAlex API Settings
     # Rate: 100k credits/day with key, 100 credits/day without

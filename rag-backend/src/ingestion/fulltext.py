@@ -486,11 +486,44 @@ class FullTextFetcher:
             if stripped and len(stripped) < 80:
                 line_counts[stripped] = line_counts.get(stripped, 0) + 1
         
-        # Remove lines that appear more than 3 times (likely headers/footers)
-        repeated_lines = {line for line, count in line_counts.items() if count > 3}
+        # Remove lines that appear more than 1 time (likely headers/footers)
+        repeated_lines = {line for line, count in line_counts.items() if count > 1}
         if repeated_lines:
             lines = [line for line in lines if line.strip() not in repeated_lines]
             text = '\n'.join(lines)
+        
+        # Pattern-based removal for common PDF artifacts
+        artifact_patterns = [
+            # Journal headers / volume info
+            r'(?i)^.*\bvol\.?\s*\d+.*$',
+            r'(?i)^.*\bno\.?\s*\d+.*$',
+            r'(?i)^.*\bissn\b.*$',
+            r'(?i)^.*\bisbn\b.*$',
+            r'(?i)^.*\bdoi\s*[:.].*$',
+            # Copyright / publisher lines
+            r'(?i)^.*\bcopyright\b.*$',
+            r'(?i)^.*©.*\d{4}.*$',
+            r'(?i)^.*\ball rights reserved\b.*$',
+            r'(?i)^.*\bpublished by\b.*$',
+            # Conference / journal title headers (short lines with these patterns)
+            r'(?i)^.{0,80}\b(?:international journal|proceedings of|conference on)\b.*$',
+        ]
+        
+        lines = text.split('\n')
+        cleaned_lines = []
+        for line in lines:
+            stripped = line.strip()
+            # Only apply artifact patterns to short lines (< 100 chars)
+            if stripped and len(stripped) < 100:
+                is_artifact = False
+                for pattern in artifact_patterns:
+                    if re.match(pattern, stripped):
+                        is_artifact = True
+                        break
+                if is_artifact:
+                    continue
+            cleaned_lines.append(line)
+        text = '\n'.join(cleaned_lines)
         
         # Remove hyphenation at line breaks (e.g., "con-\ntinue" → "continue")
         text = re.sub(r'(\w)-\n(\w)', r'\1\2', text)

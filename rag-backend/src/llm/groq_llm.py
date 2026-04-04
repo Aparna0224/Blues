@@ -45,6 +45,10 @@ class GroqLLM(BaseLLM):
             
         Returns:
             Generated response string
+            
+        Raises:
+            RuntimeError: On API errors or failed generation
+            ConnectionError: When Groq API is unreachable
         """
         try:
             headers = {
@@ -76,16 +80,18 @@ class GroqLLM(BaseLLM):
                 result = response.json()
                 return result["choices"][0]["message"]["content"]
             elif response.status_code == 429:
-                return f"Error: Groq API rate limit exceeded"
+                raise RuntimeError("Groq API rate limit exceeded. Please wait and retry.")
             else:
-                return f"Error: Groq API returned status {response.status_code}: {response.text}"
+                raise RuntimeError(f"Groq API returned status {response.status_code}: {response.text}")
                 
         except requests.exceptions.Timeout:
-            return "Error: Groq API request timed out"
+            raise RuntimeError("Groq API request timed out")
         except requests.exceptions.ConnectionError:
-            return "Error: Could not connect to Groq API"
+            raise ConnectionError("Could not connect to Groq API")
+        except RuntimeError:
+            raise  # re-raise our own RuntimeErrors
         except Exception as e:
-            return f"Error: Groq generation failed: {str(e)}"
+            raise RuntimeError(f"Groq generation failed: {str(e)}")
     
     def __repr__(self) -> str:
         return f"GroqLLM(model={self.model})"

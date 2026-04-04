@@ -51,6 +51,19 @@ Return this exact JSON structure:
 
 JSON Output:"""
 
+    LEVEL_GUIDANCE = {
+        "beginner": "Include definitions, basics, and conceptual overview before methods.",
+        "intermediate": "Focus on methods, datasets, and practical applications. Avoid unrelated background context.",
+        "advanced": "Focus on benchmarks, limitations, comparisons, and research gaps. Avoid introductory background.",
+    }
+
+    INTENT_KEYWORDS = {
+        "dataset": ["dataset", "datasets", "data", "benchmark", "corpus", "collection", "samples"],
+        "detection": ["detect", "detection", "identify", "mitigate", "mitigation", "prevent"],
+        "types": ["type", "types", "category", "categories", "taxonomy", "class"],
+        "methodology": ["method", "approach", "pipeline", "framework", "technique", "constructed"],
+    }
+
     def __init__(self, llm: BaseLLM):
         """
         Initialize PlannerAgent.
@@ -60,7 +73,82 @@ JSON Output:"""
         """
         self.llm = llm
     
-    def plan(self, question: str) -> Dict[str, Any]:
+    def detect_user_level(self, query: str) -> str:
+        q = (query or "").lower()
+        beginner_cues = ["what is", "basic", "basics", "overview", "introduction", "for beginners"]
+        advanced_cues = ["benchmark", "sota", "state of the art", "research gap", "limitation", "comparative"]
+
+        if any(c in q for c in beginner_cues):
+            return "beginner"
+        if any(c in q for c in advanced_cues):
+            return "advanced"
+        return "intermediate"
+
+    def resolve_user_level(self, query: str, user_level: str = "auto") -> str:
+        requested = (user_level or "auto").strip().lower()
+        if requested in {"beginner", "intermediate", "advanced"}:
+            return requested
+        return self.detect_user_level(query)
+
+    def _classify_subquestion_intent(self, sub_question: str) -> str:
+        sq = (sub_question or "").lower()
+        for intent, keys in self.INTENT_KEYWORDS.items():
+            if any(k in sq for k in keys):
+                return intent
+        return "methodology"
+
+    def _prune_background_subquestions(self, sub_questions: List[str], resolved_level: str, main_question: str) -> List[str]:
+        if resolved_level not in {"intermediate", "advanced"}:
+            return sub_questions
+
+        main_q = (main_question or "").lower()
+        allow_background = any(k in main_q for k in ["overview", "introduction", "what is", "basics"])
+        if allow_background:
+            return sub_questions
+
+        filtered = []
+        for sq in sub_questions:
+            low = (sq or "").lower()
+            if any(k in low for k in ["what is", "introduction", "overview", "iot", "blockchain basics", "general background"]):
+                continue
+            filtered.append(sq)
+        return filtered or sub_questions
+
+    def _dataset_focused_plan(self, question: str, resolved_level: str) -> Optional[Dict[str, Any]]:
+        q = (question or "").lower()
+        if "dataset" not in q:
+            return None
+
+        if resolved_level == "beginner":
+            sub_questions = [
+                f"What is meant by a vulnerability dataset for {question}?",
+                f"What kinds of information are typically included in {question}?",
+                f"How are these datasets used in practice?",
+            ]
+            search_queries = [
+                f"{question} definition",
+                f"{question} schema fields",
+                f"{question} practical use",
+            ]
+        else:
+            sub_questions = [
+                f"What datasets exist for {question}?",
+                f"How are these datasets constructed and labeled?",
+                f"What limitations and benchmark gaps exist in these datasets?",
+            ]
+            search_queries = [
+                f"{question} benchmark datasets",
+                f"{question} dataset construction labeling",
+                f"{question} dataset limitations benchmark gaps",
+            ]
+
+        return {
+            "main_question": question,
+            "sub_questions": sub_questions,
+            "search_queries": search_queries,
+        }
+
+    def plan(self, question: str, user_level: str = "auto") -> Dict[str, Any]:
         """
         Decompose a question into sub-questions and search queries.
         
@@ -73,7 +161,23 @@ JSON Output:"""
             - sub_questions: List[str]
             - search_queries: List[str]
         """
-        prompt = self.PLANNER_PROMPT.format(question=question)
+        resolved_level = self.resolve_user_level(question, user_level)
+
+        hand_plan = self._dataset_focused_plan(question, resolved_level)
+        if hand_plan is not None:
+            hand_plan["resolved_user_level"] = resolved_level
+            hand_plan["subquestion_intents"] = {
+                sq: self._classify_subquestion_intent(sq)
+                for sq in hand_plan.get("sub_questions", [])
+            }
+            return hand_plan
+
+        level_prompt = (
+            f"\n\nResearch level: {resolved_level}\n"
+            f"Guidance: {self.LEVEL_GUIDANCE.get(resolved_level, self.LEVEL_GUIDANCE['intermediate'])}\n"
+            "Do not include unrelated background topics unless explicitly asked by the query."
+        )
+        prompt = self.PLANNER_PROMPT.format(question=question + level_prompt)
         
         print(f"🧠 Planning query decomposition...")
         
@@ -83,6 +187,16 @@ JSON Output:"""
             
             # Validate plan structure
             plan = self._validate_plan(plan, question)
+            plan["sub_questions"] = self._prune_background_subquestions(
+                plan.get("sub_questions", []),
+                resolved_level,
+                question,
+            )
+            plan["resolved_user_level"] = resolved_level
+            plan["subquestion_intents"] = {
+                sq: self._classify_subquestion_intent(sq)
+                for sq in plan.get("sub_questions", [])
+            }
             
             print(f"✓ Generated plan with {len(plan['sub_questions'])} sub-questions")
             print(f"✓ Generated {len(plan['search_queries'])} search queries")
@@ -92,7 +206,13 @@ JSON Output:"""
         except Exception as e:
             print(f"⚠ Planning failed: {e}")
             # Fallback: return simple plan with original query
-            return self._fallback_plan(question)
+            fallback = self._fallback_plan(question)
+            fallback["resolved_user_level"] = resolved_level
+            fallback["subquestion_intents"] = {
+                sq: self._classify_subquestion_intent(sq)
+                for sq in fallback.get("sub_questions", [])
+            }
+            return fallback
     
     def _parse_json(self, raw_output: str) -> Dict[str, Any]:
         """

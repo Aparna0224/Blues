@@ -74,6 +74,30 @@ class TestEvidenceExtractor:
         
         # Should handle abbreviations correctly
         assert len(sentences) >= 1
+
+    def test_split_into_sentences_filters_prompt_artifacts(self, extractor):
+        """Prompt-like scaffolding such as 'Query:' should be removed as junk."""
+        text = (
+            "Query: We need to check whether the device has sleep mode and wake-up features. "
+            "RAG improves factual grounding by retrieving external evidence."
+        )
+        sentences = extractor.split_into_sentences(text)
+
+        assert all(not s.lower().startswith("query:") for s in sentences)
+        assert any("rag improves factual grounding" in s.lower() for s in sentences)
+
+    def test_query_term_overlap_helper(self, extractor):
+        """Keyword overlap helper should require at least one meaningful shared term."""
+        assert extractor._has_query_term_overlap(
+            "use of rag in ai",
+            "RAG improves factual grounding for language models",
+            min_overlap=1,
+        )
+        assert not extractor._has_query_term_overlap(
+            "use of rag in ai",
+            "Healthcare regulation and bioethics are critical",
+            min_overlap=1,
+        )
     
     # =========================================================================
     # Tests for compute_sentence_similarity()

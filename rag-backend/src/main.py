@@ -5,7 +5,7 @@ from pathlib import Path
 from src.database import get_mongo_client
 from src.ingestion.loader import PaperIngestor
 from src.chunking.processor import TextChunker
-from src.embeddings.embedder import EmbeddingGenerator
+from src.embeddings.embedder import EmbeddingGenerator, get_shared_embedder
 from src.vector_store import FAISSVectorStore
 from src.retrieval.retriever import Retriever
 from src.generation.generator import AnswerGenerator
@@ -55,7 +55,7 @@ def build_index():
         chunker = TextChunker()
         chunks = chunker.create_chunks(papers)
         click.echo(f"📝 Created {len(chunks)} chunks")
-        embedder = EmbeddingGenerator()
+        embedder = get_shared_embedder()
         embeddings, chunks = embedder.generate_chunk_embeddings(chunks)
         click.echo(f"✨ Generated {len(embeddings)} embeddings")
         vector_store = FAISSVectorStore()
@@ -84,7 +84,27 @@ def build_index():
               help='Enable Stage 3 agentic planning with query decomposition')
 @click.option('--dynamic', is_flag=True, default=False,
               help='Enable dynamic paper fetching (fetch fresh papers for each query)')
-def query(query, top_k, evidence, plan, dynamic):
+@click.option('--filter-section', default=None, help='Filter by section (abstract/body)')
+@click.option('--filter-category', default=None, help='Filter by chunk category')
+@click.option('--filter-tags', default=None, help='Comma-separated tags to match')
+@click.option('--filter-year-min', default=None, type=int, help='Minimum publication year')
+@click.option('--filter-year-max', default=None, type=int, help='Maximum publication year')
+@click.option('--filter-title-contains', default=None, help='Filter by title substring')
+@click.option('--filter-source', default=None, help='Filter by source (openalex/semantic_scholar)')
+def query(
+    query,
+    top_k,
+    evidence,
+    plan,
+    dynamic,
+    filter_section,
+    filter_category,
+    filter_tags,
+    filter_year_min,
+    filter_year_max,
+    filter_title_contains,
+    filter_source,
+):
     """Query the RAG system."""
     click.echo(f"\n🔍 Processing query: {query}")
     if dynamic:
@@ -102,13 +122,23 @@ def query(query, top_k, evidence, plan, dynamic):
         mongo.connect()
         
         # Stage 3: Agentic RAG with planning (with optional dynamic retrieval)
+        filters = _build_metadata_filters(
+            section=filter_section,
+            category=filter_category,
+            tags=filter_tags,
+            year_min=filter_year_min,
+            year_max=filter_year_max,
+            title_contains=filter_title_contains,
+            source=filter_source,
+        )
+
         if plan:
-            _run_agentic_query(query, evidence, mongo, dynamic=dynamic)
+            _run_agentic_query(query, evidence, mongo, dynamic=dynamic, metadata_filters=filters)
             return
         
         # Stage 1/2: Standard retrieval
         retriever = Retriever(use_evidence=evidence)
-        retrieved_chunks = retriever.retrieve_chunks(query, top_k)
+        retrieved_chunks = retriever.retrieve_chunks(query, top_k, metadata_filters=filters)
         if not retrieved_chunks:
             click.echo("❌ No relevant chunks found.")
             return
@@ -134,7 +164,48 @@ def query(query, top_k, evidence, plan, dynamic):
         click.echo(f"❌ Error processing query: {e}")
 
 
-def _run_agentic_query(query: str, use_evidence: bool, mongo, dynamic: bool = False):
+def _build_metadata_filters(
+    section: str | None = None,
+    category: str | None = None,
+    tags: str | None = None,
+    year_min: int | None = None,
+    year_max: int | None = None,
+    title_contains: str | None = None,
+    source: str | None = None,
+) -> dict | None:
+    filters: dict[str, object] = {}
+
+    if section:
+        filters["section"] = section
+    if category:
+        filters["category"] = category
+    if tags:
+        tag_list = [t.strip() for t in tags.split(",") if t.strip()]
+        if tag_list:
+            filters["tags"] = tag_list
+    if year_min is not None or year_max is not None:
+        year_filter: dict[str, int] = {}
+        if year_min is not None:
+            year_filter["min"] = year_min
+        if year_max is not None:
+            year_filter["max"] = year_max
+        if year_filter:
+            filters["year"] = year_filter
+    if title_contains:
+        filters["title_contains"] = title_contains
+    if source:
+        filters["source"] = source
+
+    return filters or None
+
+
+def _run_agentic_query(
+    query: str,
+    use_evidence: bool,
+    mongo,
+    dynamic: bool = False,
+    metadata_filters: dict | None = None,
+):
     """
     Run Stage 3 agentic RAG flow with Stage 4 verification,
     Stage 5 execution trace, and LLM research summary.
@@ -234,7 +305,8 @@ def _run_agentic_query(query: str, use_evidence: bool, mongo, dynamic: bool = Fa
             chunks = dynamic_retriever.dynamic_retrieve(
                 search_queries=search_queries,
                 main_query=query,
-                top_k=15
+                top_k=15,
+                metadata_filters=metadata_filters,
             )
         else:
             click.echo("\n🔍 Step 2: Multi-query retrieval from index...")
@@ -242,7 +314,8 @@ def _run_agentic_query(query: str, use_evidence: bool, mongo, dynamic: bool = Fa
             chunks = retriever.multi_retrieve(
                 search_queries,
                 top_k_per_query=5,
-                max_total=15
+                max_total=15,
+                metadata_filters=metadata_filters,
             )
     except Exception as e:
         click.echo(f"❌ Error during retrieval: {e}")
@@ -257,13 +330,27 @@ def _run_agentic_query(query: str, use_evidence: bool, mongo, dynamic: bool = Fa
         tracer.mark_failed()
         _save_trace(tracer, mongo)
         return
+
+    unique_paper_ids = {c.get("paper_id") for c in chunks if c.get("paper_id")}
+    if len(unique_paper_ids) < Config.MIN_UNIQUE_PAPERS_FOR_CLAIMS:
+        msg = (
+            "Insufficient source diversity for claim generation: "
+            f"found {len(unique_paper_ids)} unique paper(s), "
+            f"requires at least {Config.MIN_UNIQUE_PAPERS_FOR_CLAIMS}. "
+            "Please broaden the query or increase retrieval breadth."
+        )
+        click.echo(f"❌ {msg}")
+        tracer.record_error("retrieval", RuntimeError(msg))
+        tracer.mark_failed()
+        _save_trace(tracer, mongo)
+        return
     
     # Build per-query retrieval trace
     per_query_trace = []
     for sq in search_queries:
         matching = [
             c for c in chunks
-            if c.get("search_query") == sq or True  # all chunks available
+            if (c.get("matched_query") == sq) or (c.get("search_query") == sq)
         ]
         per_query_trace.append({
             "search_query": sq,

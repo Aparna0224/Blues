@@ -16,9 +16,12 @@ import time
 import uuid
 import tempfile
 import traceback
+import re
 from typing import Optional
+from datetime import datetime, timezone
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
+from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -42,6 +45,27 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# In-memory cache for downloadable report payloads keyed by execution_id.
+REPORT_CACHE: dict[str, dict] = {}
+
+
+def _slugify(value: str, fallback: str = "report") -> str:
+    text = (value or "").strip().lower()
+    text = re.sub(r"[^a-z0-9]+", "_", text)
+    text = re.sub(r"_+", "_", text).strip("_")
+    return text[:64] or fallback
+
+
+def _short_timestamp(value: str | None) -> str:
+    if not value:
+        return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+    try:
+        normalized = value.replace("Z", "+00:00")
+        dt = datetime.fromisoformat(normalized)
+        return dt.strftime("%Y%m%d_%H%M")
+    except Exception:
+        return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+
 
 # ─── Request / Response models ───────────────────────────────────
 
@@ -50,6 +74,8 @@ class QueryRequest(BaseModel):
     num_documents: int = Field(default=15, ge=1, le=50, description="Number of documents to retrieve")
     mode: str = Field(default="dynamic", pattern="^(dynamic|cached)$", description="Retrieval mode")
     include_summary: bool = Field(default=True, description="Include LLM summary (Stage 5)")
+    user_level: Optional[str] = Field(default="auto", description="User level for API request")
+    filters: Optional[dict] = Field(default=None, description="Optional metadata filters for retrieval")
 
 
 class QueryResponse(BaseModel):
@@ -134,7 +160,7 @@ async def run_query(req: QueryRequest):
 
     try:
         t0 = _time.perf_counter()
-        plan = planner.plan(req.query)
+        plan = planner.plan(req.query, req.user_level or "auto")
         planning_ms = round((_time.perf_counter() - t0) * 1000, 1)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Planning failed: {e}")
@@ -153,6 +179,9 @@ async def run_query(req: QueryRequest):
         latency_ms=planning_ms,
     )
 
+    # Scale top_k for agentic queries: each sub-question needs its own evidence
+    effective_top_k = max(req.num_documents, len(sub_questions) * 5, 15)
+
     # ── Step 2: Retrieval ────────────────────────────────────────
     chunks = []
     try:
@@ -163,25 +192,54 @@ async def run_query(req: QueryRequest):
             chunks = dynamic_retriever.dynamic_retrieve(
                 search_queries=search_queries,
                 main_query=req.query,
-                top_k=req.num_documents,
+                top_k=effective_top_k,
+                metadata_filters=req.filters,
             )
         else:
-            retriever = Retriever(use_evidence=True)
-            chunks = retriever.multi_retrieve(
-                search_queries,
-                top_k_per_query=5,
-                max_total=req.num_documents,
-            )
+            # Cached mode: use hybrid retrieval if enabled
+            if Config.HYBRID_RETRIEVAL_ENABLED:
+                from src.retrieval.hybrid_retriever import HybridRetriever
+
+                hybrid_retriever = HybridRetriever(use_evidence=True)
+                chunks = hybrid_retriever.multi_retrieve(
+                    search_queries,
+                    top_k_per_query=max(5, len(sub_questions) * 3),
+                    max_total=effective_top_k,
+                    metadata_filters=req.filters,
+                )
+            else:
+                retriever = Retriever(use_evidence=True)
+                chunks = retriever.multi_retrieve(
+                    search_queries,
+                    top_k_per_query=max(5, len(sub_questions) * 3),
+                    max_total=effective_top_k,
+                    metadata_filters=req.filters,
+                )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Retrieval failed: {e}")
 
     if not chunks:
         raise HTTPException(status_code=404, detail="No relevant chunks found for any search query.")
 
+    unique_paper_ids = {c.get("paper_id") for c in chunks if c.get("paper_id")}
+    if len(unique_paper_ids) < Config.MIN_UNIQUE_PAPERS_FOR_CLAIMS:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Insufficient source diversity for claim generation: "
+                f"found {len(unique_paper_ids)} unique paper(s), "
+                f"requires at least {Config.MIN_UNIQUE_PAPERS_FOR_CLAIMS}. "
+                "Please broaden the query, increase documents, or switch retrieval mode."
+            ),
+        )
+
     # Build per-query retrieval trace
     per_query_trace = []
     for sq in search_queries:
-        matching = [c for c in chunks if c.get("search_query") == sq or True]
+        matching = [
+            c for c in chunks
+            if (c.get("matched_query") == sq) or (c.get("search_query") == sq)
+        ]
         per_query_trace.append(
             {
                 "search_query": sq,
@@ -200,6 +258,7 @@ async def run_query(req: QueryRequest):
     try:
         generator = AnswerGenerator()
         grouped_answer = generator.generate_grouped_answer(plan, chunks)
+        analysis_data = generator.get_last_analysis() if hasattr(generator, "get_last_analysis") else {}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Answer generation failed: {e}")
 
@@ -248,6 +307,8 @@ async def run_query(req: QueryRequest):
                 grouped_answer=grouped_answer,
                 verification_output=verification_output,
                 verification_result=verification_result,
+                analysis_data=analysis_data,
+                query=req.query,
             )
         except Exception as e:
             warnings.append(f"Summary generation failed: {e}")
@@ -293,6 +354,25 @@ async def run_query(req: QueryRequest):
 
     # ── Save trace ───────────────────────────────────────────────
     execution_id = tracer.execution_id
+
+    if analysis_data:
+        analysis_data["query"] = req.query
+        analysis_data["generated_at"] = datetime.now(timezone.utc).isoformat()
+        analysis_data["final_summary"] = summary_text or ""
+        # Enrich references from papers_found when available (DOI/link mandatory in export).
+        paper_lookup = {p.get("paper_id", ""): p for p in papers_found}
+        for ref in analysis_data.get("references", []):
+            pid = ref.get("paper_id", "")
+            doc = paper_lookup.get(pid, {})
+            if doc:
+                ref["title"] = doc.get("title", ref.get("title", "Unknown"))
+                ref["year"] = doc.get("year", ref.get("year", "N/A"))
+                ref["doi"] = ref.get("doi") or doc.get("doi", "")
+                if not ref.get("link") and doc.get("doi"):
+                    ref["link"] = f"https://doi.org/{doc.get('doi')}"
+
+        REPORT_CACHE[execution_id] = analysis_data
+
     try:
         tracer.save_trace(directory="output")
     except Exception:
@@ -323,6 +403,52 @@ async def run_query(req: QueryRequest):
         summary=summary_text,
         total_time_ms=total_ms,
         warnings=warnings,
+    )
+
+
+@app.get("/api/download-report")
+async def download_report(
+    format: str = Query(default="pdf", pattern="^(pdf|md)$"),
+    execution_id: str = Query(..., min_length=6),
+    project_name: str | None = Query(default=None),
+    query_text: str | None = Query(default=None),
+    generated_at: str | None = Query(default=None),
+):
+    """Download a comprehensive report in PDF or Markdown format for a completed execution."""
+    from src.export.report_builder import ReportBuilder
+
+    analysis = REPORT_CACHE.get(execution_id)
+    if not analysis:
+        raise HTTPException(
+            status_code=404,
+            detail="Report data not found for execution_id. Re-run query and try download again.",
+        )
+
+    analysis_for_report = dict(analysis)
+    effective_query = (query_text or analysis_for_report.get("query") or "Research Query").strip()
+    effective_generated_at = generated_at or analysis_for_report.get("generated_at") or datetime.now(timezone.utc).isoformat()
+
+    analysis_for_report["query"] = effective_query
+    analysis_for_report["generated_at"] = effective_generated_at
+    analysis_for_report["project_name"] = (project_name or analysis_for_report.get("project_name") or "Untitled Project").strip()
+    analysis_for_report["report_title"] = effective_query
+
+    builder = ReportBuilder(system_name="Blues")
+    file_stem = f"{_slugify(effective_query, fallback='query')}_{_short_timestamp(effective_generated_at)}"
+
+    if format == "md":
+        body = builder.build_markdown(analysis_for_report).encode("utf-8")
+        return Response(
+            content=body,
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": f"attachment; filename={file_stem}.md"},
+        )
+
+    body = builder.build_pdf(analysis_for_report)
+    return Response(
+        content=body,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f"attachment; filename={file_stem}.pdf"},
     )
 
 
@@ -417,10 +543,10 @@ async def upload_paper(file: UploadFile = File(...)):
     # Generate embeddings and add to FAISS
     vectors_added = 0
     try:
-        from src.embeddings.embedder import EmbeddingGenerator
+        from src.embeddings.embedder import get_shared_embedder
         from src.vector_store import FAISSVectorStore
 
-        embedder = EmbeddingGenerator()
+        embedder = get_shared_embedder()
         embedded_chunks = embedder.generate_chunk_embeddings(chunks)
 
         vector_store = FAISSVectorStore()

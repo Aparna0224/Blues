@@ -7,12 +7,28 @@ from src.config import Config
 
 
 class EmbeddingGenerator:
-    """Generate embeddings for text chunks using SciBERT."""
+    """Generate embeddings for text chunks using SciBERT.
+    
+    Uses a class-level singleton so the heavy model is loaded only once.
+    Prefer ``get_shared_embedder()`` over ``EmbeddingGenerator()`` to
+    guarantee reuse.
+    """
+    
+    _instance = None
+    
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
     
     def __init__(self):
+        if hasattr(self, '_initialized') and self._initialized:
+            return
         self.model = SentenceTransformer(Config.EMBEDDING_MODEL)
+        self._initialized = True
         print(f"✓ Loaded embedding model: {Config.EMBEDDING_MODEL}")
-    
+
+
     def embed_text(self, text: str) -> np.ndarray:
         """
         Generate embedding for a single text.
@@ -67,3 +83,8 @@ class EmbeddingGenerator:
         
         # Return embeddings as separate array for FAISS
         return embeddings, chunks
+
+
+def get_shared_embedder() -> EmbeddingGenerator:
+    """Return the global EmbeddingGenerator singleton."""
+    return EmbeddingGenerator()

@@ -7,10 +7,14 @@ This module implements Stage 2 of the RAG pipeline:
 - Returns structured evidence with similarity scores
 """
 
-import nltk
+import re
+try:
+    import nltk
+except Exception:  # pragma: no cover - optional dependency fallback
+    nltk = None
 from typing import List, Dict, Any, Tuple
 import numpy as np
-from src.embeddings.embedder import EmbeddingGenerator
+from src.config import Config
 
 
 class EvidenceExtractor:
@@ -18,21 +22,111 @@ class EvidenceExtractor:
     
     def __init__(self):
         """Initialize evidence extractor with NLTK sentence tokenizer."""
-        # Download NLTK data if not present
-        try:
-            nltk.data.find('tokenizers/punkt')
-        except LookupError:
-            print("📥 Downloading NLTK punkt tokenizer...")
-            nltk.download('punkt', quiet=True)
+        self._use_nltk = nltk is not None
+        if self._use_nltk:
+            # Download NLTK data if not present
+            try:
+                nltk.data.find('tokenizers/punkt')
+            except LookupError:
+                print("📥 Downloading NLTK punkt tokenizer...")
+                nltk.download('punkt', quiet=True)
+
+            try:
+                nltk.data.find('tokenizers/punkt_tab')
+            except LookupError:
+                print("📥 Downloading NLTK punkt_tab tokenizer...")
+                nltk.download('punkt_tab', quiet=True)
         
+        self.embedder = None
         try:
-            nltk.data.find('tokenizers/punkt_tab')
-        except LookupError:
-            print("📥 Downloading NLTK punkt_tab tokenizer...")
-            nltk.download('punkt_tab', quiet=True)
-        
-        self.embedder = EmbeddingGenerator()
+            from src.embeddings.embedder import get_shared_embedder
+            self.embedder = get_shared_embedder()
+        except Exception:
+            self.embedder = None
     
+    # ── Junk-sentence detection patterns ─────────────────────────
+    _CITATION_PATTERNS = [
+        "vol.", "vol ", "no.", "doi:", "doi.org", "et al.", "et al,",
+        "issn", "isbn", "arxiv:", "arxiv.", "pp.", "pp ", "pages ",
+        "copyright", "©", "all rights reserved",
+        "proceedings of", "conference on", "journal of",
+        "international journal", "ieee", "acm", "springer",
+        "published by", "accepted for", "submitted to",
+    ]
+
+    _STOP_WORDS = {
+        "what", "how", "why", "when", "where", "which", "is", "are",
+        "does", "do", "can", "the", "a", "an", "in", "of", "and",
+        "or", "to", "for", "on", "with", "by", "from", "as", "at",
+        "about", "into", "be", "this", "that", "it", "its", "their",
+        "they", "them", "we", "our", "you", "your", "using", "used",
+        "use", "uses", "benefits", "benefit",
+    }
+
+    _PROMPT_NOISE_PREFIXES = (
+        "query:",
+        "question:",
+        "task:",
+        "instruction:",
+        "prompt:",
+    )
+
+    @classmethod
+    def _is_junk_sentence(cls, sentence: str) -> bool:
+        """Return True if the sentence looks like a citation, header, or noise."""
+        s = sentence.strip()
+        words = s.split()
+
+        # Too short to be meaningful content
+        if len(words) < 3:
+            return True
+
+        # Mostly uppercase (journal header / title block)
+        alpha_chars = [c for c in s if c.isalpha()]
+        if alpha_chars:
+            upper_ratio = sum(1 for c in alpha_chars if c.isupper()) / len(alpha_chars)
+            if upper_ratio > 0.6:
+                return True
+
+        # Mostly numeric / punctuation (table data, page numbers)
+        alnum = [c for c in s if c.isalnum()]
+        if alnum:
+            digit_ratio = sum(1 for c in alnum if c.isdigit()) / len(alnum)
+            if digit_ratio > 0.5:
+                return True
+
+        # Known citation / header patterns
+        lower = s.lower()
+        if any(pat in lower for pat in cls._CITATION_PATTERNS):
+            return True
+
+        # Prompt/template artifacts from scraped data
+        if lower.startswith(cls._PROMPT_NOISE_PREFIXES):
+            return True
+
+        return False
+
+    @classmethod
+    def _tokenize_terms(cls, text: str) -> set[str]:
+        if not text:
+            return set()
+        return {
+            w.strip(".,;:()[]{}\"'`).?\n\t").lower()
+            for w in text.split()
+            if len(w.strip(".,;:()[]{}\"'`).?\n\t")) > 1
+            and w.strip(".,;:()[]{}\"'`).?\n\t").lower() not in cls._STOP_WORDS
+        }
+
+    @classmethod
+    def _has_query_term_overlap(cls, query: str, sentence: str, min_overlap: int) -> bool:
+        if min_overlap <= 0:
+            return True
+        query_terms = cls._tokenize_terms(query)
+        sentence_terms = cls._tokenize_terms(sentence)
+        if not query_terms:
+            return True
+        return len(query_terms.intersection(sentence_terms)) >= min_overlap
+
     def split_into_sentences(self, text: str) -> List[str]:
         """
         Split text into sentences using NLTK.
@@ -46,10 +140,22 @@ class EvidenceExtractor:
         if not text or not text.strip():
             return []
         
-        sentences = nltk.sent_tokenize(text)
+        if self._use_nltk:
+            sentences = nltk.sent_tokenize(text)
+        else:
+            clean_text = " ".join(text.replace("\n", " ").split())
+            sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", clean_text) if s.strip()]
+            sentences = [s if s.endswith((".", "!", "?")) else f"{s}." for s in sentences]
         # Filter out very short sentences (likely noise)
         sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
+
+        # Filter out question-like sentences when enabled
+        if Config.FILTER_QUESTION_SENTENCES:
+            sentences = [s for s in sentences if not s.strip().endswith("?")]
         
+        # Filter out junk sentences (citations, headers, numeric noise)
+        sentences = [s for s in sentences if not self._is_junk_sentence(s)]
+
         return sentences
     
     def compute_sentence_similarity(
@@ -69,6 +175,19 @@ class EvidenceExtractor:
         """
         if not sentences:
             return []
+
+        if self.embedder is None:
+            query_terms = self._tokenize_terms(query)
+            scored = []
+            for sentence in sentences:
+                sent_terms = self._tokenize_terms(sentence)
+                if not query_terms or not sent_terms:
+                    score = 0.0
+                else:
+                    score = len(query_terms.intersection(sent_terms)) / max(1, len(query_terms.union(sent_terms)))
+                scored.append((sentence, float(score)))
+            scored.sort(key=lambda x: x[1], reverse=True)
+            return scored
         
         # Generate query embedding
         query_embedding = self.embedder.embed_text(query)
@@ -89,10 +208,10 @@ class EvidenceExtractor:
         return similarities
     
     def select_best_sentence(
-        self, 
-        query: str, 
-        text: str, 
-        min_similarity: float = 0.3
+    self, 
+    query: str, 
+    text: str, 
+    min_similarity: float = Config.EVIDENCE_MIN_SIMILARITY
     ) -> Dict[str, Any]:
         """
         Select the most relevant sentence from text for a given query.
@@ -123,20 +242,31 @@ class EvidenceExtractor:
                 "all_sentences": []
             }
         
-        best_sentence, best_score = similarities[0]
+        min_keyword_overlap = max(0, int(Config.EVIDENCE_KEYWORD_MIN_OVERLAP))
+
+        selected_sentence = ""
+        selected_score = 0.0
+        for cand_sentence, cand_score in similarities:
+            if self._has_query_term_overlap(query, cand_sentence, min_keyword_overlap):
+                selected_sentence = cand_sentence
+                selected_score = cand_score
+                break
+
+        if not selected_sentence:
+            selected_sentence, selected_score = similarities[0]
         
         # If best score is below threshold, return empty
-        if best_score < min_similarity:
+        if selected_score < min_similarity:
             return {
-                "best_sentence": best_sentence,
-                "best_score": best_score,
+                "best_sentence": selected_sentence,
+                "best_score": selected_score,
                 "all_sentences": similarities,
                 "below_threshold": True
             }
         
         return {
-            "best_sentence": best_sentence,
-            "best_score": best_score,
+            "best_sentence": selected_sentence,
+            "best_score": selected_score,
             "all_sentences": similarities,
             "below_threshold": False
         }
@@ -151,7 +281,8 @@ class EvidenceExtractor:
         Extract sentence-level evidence from retrieved chunks.
         
         This is the main method for Stage 2 evidence extraction.
-        For each chunk, it finds the most relevant sentence(s) to the query.
+        Embeds ALL sentences across ALL chunks in a single batch for efficiency,
+        then finds the most relevant sentence(s) per chunk.
         
         Args:
             query: The query string
@@ -164,29 +295,86 @@ class EvidenceExtractor:
             - evidence_score: Similarity score for the evidence
             - sentence_scores: All sentence scores for the chunk
         """
-        enhanced_chunks = []
-        
+        if not chunks:
+            return []
+
+        if self.embedder is None:
+            enhanced_chunks = []
+            for chunk in chunks:
+                sel = self.select_best_sentence(query, chunk.get("text", ""))
+                enhanced_chunks.append({
+                    **chunk,
+                    "evidence_sentence": sel.get("best_sentence", ""),
+                    "evidence_score": float(sel.get("best_score", 0.0) or 0.0),
+                    "sentence_scores": sel.get("all_sentences", []),
+                    "evidence_below_threshold": bool(sel.get("below_threshold", False)),
+                })
+            return enhanced_chunks
+
+        # Step 1: Split all chunks into sentences and record boundaries
+        all_sentences: List[str] = []
+        chunk_boundaries: List[Tuple[int, int]] = []  # (start_idx, end_idx) per chunk
+
         for chunk in chunks:
             text = chunk.get("text", "")
-            
-            # Extract evidence for this chunk
-            evidence = self.select_best_sentence(query, text)
-            
-            # Create enhanced chunk with evidence
+            sentences = self.split_into_sentences(text)
+            start = len(all_sentences)
+            all_sentences.extend(sentences)
+            end = len(all_sentences)
+            chunk_boundaries.append((start, end))
+
+        # Step 2: Batch-embed all sentences + query in one go
+        query_embedding = self.embedder.embed_text(query)
+
+        if all_sentences:
+            sentence_embeddings = self.embedder.embed_batch(all_sentences)
+        else:
+            sentence_embeddings = np.array([])
+
+        # Step 3: Score and assign best sentence per chunk
+        enhanced_chunks = []
+        min_similarity = Config.EVIDENCE_MIN_SIMILARITY
+
+        for chunk_idx, chunk in enumerate(chunks):
+            start, end = chunk_boundaries[chunk_idx]
+
+            if start == end:
+                # No valid sentences for this chunk
+                text = chunk.get("text", "")
+                enhanced_chunks.append({
+                    **chunk,
+                    "evidence_sentence": text[:200] if text else "",
+                    "evidence_score": 0.0,
+                    "evidence_below_threshold": True,
+                })
+                continue
+
+            # Compute similarities for this chunk's sentences
+            chunk_sents = all_sentences[start:end]
+            chunk_embs = sentence_embeddings[start:end]
+            scores = [float(np.dot(query_embedding, emb)) for emb in chunk_embs]
+
+            # Sort by score descending
+            indexed_scores = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
+            best_idx, best_score = indexed_scores[0]
+            best_sentence = chunk_sents[best_idx]
+
+            below_threshold = best_score < min_similarity
+
             enhanced_chunk = {
                 **chunk,
-                "evidence_sentence": evidence["best_sentence"],
-                "evidence_score": evidence["best_score"],
-                "evidence_below_threshold": evidence.get("below_threshold", False),
+                "evidence_sentence": best_sentence,
+                "evidence_score": best_score,
+                "evidence_below_threshold": below_threshold,
             }
-            
+
             # Add top N sentences if requested
-            if top_n_sentences > 1 and evidence.get("all_sentences"):
+            if top_n_sentences > 1:
                 enhanced_chunk["top_sentences"] = [
-                    {"sentence": s, "score": sc} 
-                    for s, sc in evidence["all_sentences"][:top_n_sentences]
+                    {"sentence": chunk_sents[idx], "score": sc}
+                    for idx, sc in indexed_scores[:top_n_sentences]
                 ]
-            
+
             enhanced_chunks.append(enhanced_chunk)
         
         return enhanced_chunks

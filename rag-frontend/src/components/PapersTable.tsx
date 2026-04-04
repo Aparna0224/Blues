@@ -1,61 +1,66 @@
 import { BookOpen, ExternalLink } from 'lucide-react';
 import type { PaperInfo } from '../types';
 
-interface Props {
-  papers: PaperInfo[];
-}
+interface Props { papers: PaperInfo[]; }
+
+const th: React.CSSProperties = {
+  padding: '10px 14px', fontSize: 10, fontWeight: 600, color: 'var(--text-muted)',
+  textTransform: 'uppercase', letterSpacing: '0.07em', textAlign: 'left', background: 'rgba(255,255,255,0.03)',
+};
 
 export default function PapersTable({ papers }: Props) {
   if (!papers.length) return null;
 
   return (
-    <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden animate-fade-in">
-      <div className="px-6 py-4 border-b border-slate-100 flex items-center gap-2">
-        <BookOpen size={16} className="text-blue-500" />
-        <h3 className="text-sm font-semibold text-slate-800">
-          Source Papers
-        </h3>
-        <span className="ml-1 text-xs text-slate-400 font-medium">({papers.length})</span>
+    <div style={{ borderRadius: 13, border: '1px solid var(--border)', background: 'var(--bg-card)', overflow: 'hidden' }} className="animate-fade-in">
+      <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <BookOpen size={15} style={{ color: 'var(--cyan)' }} />
+        <h3 style={{ margin: 0, fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>Source Papers</h3>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 2 }}>({papers.length})</span>
       </div>
 
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
+      <div style={{ overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
           <thead>
-            <tr className="bg-slate-50/80 text-left text-[10px] font-semibold text-slate-500 uppercase tracking-wider">
-              <th className="px-6 py-3 w-10">#</th>
-              <th className="px-4 py-3">Title</th>
-              <th className="px-4 py-3">Authors</th>
-              <th className="px-4 py-3 w-16">Year</th>
-              <th className="px-4 py-3 w-16">Link</th>
+            <tr>
+              <th style={{ ...th, width: 36 }}>#</th>
+              <th style={th}>Title</th>
+              <th style={th}>Authors</th>
+              <th style={{ ...th, width: 60 }}>Year</th>
+              <th style={{ ...th, width: 60 }}>Link</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-slate-50">
+          <tbody>
             {papers.map((p, i) => (
-              <tr key={p.paper_id} className="hover:bg-blue-50/30 transition-colors">
-                <td className="px-6 py-3.5">
-                  <span className="w-6 h-6 rounded-full bg-slate-100 text-slate-500 text-xs font-bold inline-flex items-center justify-center">
+              <tr
+                key={p.paper_id}
+                style={{ borderTop: '1px solid rgba(255,255,255,0.05)', transition: 'background 0.1s' }}
+                onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.03)')}
+                onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+              >
+                <td style={{ padding: '11px 14px' }}>
+                  <span style={{ width: 22, height: 22, borderRadius: '50%', background: 'rgba(255,255,255,0.07)', color: 'var(--text-muted)', fontSize: 10, fontWeight: 700, display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
                     {i + 1}
                   </span>
                 </td>
-                <td className="px-4 py-3.5 font-medium text-slate-800 max-w-md">
-                  <span className="line-clamp-2 leading-snug">{p.title}</span>
+                <td style={{ padding: '11px 14px', fontWeight: 500, color: 'var(--text-primary)', maxWidth: 340 }}>
+                  <span style={{ display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden', lineHeight: 1.5 }}>{p.title}</span>
                 </td>
-                <td className="px-4 py-3.5 text-slate-500 max-w-xs">
-                  <span className="line-clamp-1">{p.authors}</span>
+                <td style={{ padding: '11px 14px', color: 'var(--text-muted)', maxWidth: 200 }}>
+                  <span style={{ display: '-webkit-box', WebkitLineClamp: 1, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{p.authors}</span>
                 </td>
-                <td className="px-4 py-3.5 text-slate-400 tabular-nums">{p.year || '—'}</td>
-                <td className="px-4 py-3.5">
+                <td style={{ padding: '11px 14px', color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums' }}>{p.year || '—'}</td>
+                <td style={{ padding: '11px 14px' }}>
                   {p.doi ? (
                     <a
                       href={p.doi.startsWith('http') ? p.doi : `https://doi.org/${p.doi}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 text-xs font-medium"
+                      target="_blank" rel="noopener noreferrer"
+                      style={{ display: 'inline-flex', alignItems: 'center', gap: 4, color: 'var(--teal)', fontSize: 11, fontWeight: 500, textDecoration: 'none' }}
                     >
-                      DOI <ExternalLink size={10} />
+                      DOI <ExternalLink size={9} />
                     </a>
                   ) : (
-                    <span className="text-slate-300 text-xs">—</span>
+                    <span style={{ color: 'rgba(255,255,255,0.15)', fontSize: 11 }}>—</span>
                   )}
                 </td>
               </tr>

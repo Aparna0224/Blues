@@ -6,6 +6,26 @@ import type {
   StatusResponse,
 } from '../types';
 
+interface DownloadReportOptions {
+  queryText?: string;
+  projectName?: string;
+  timestamp?: string;
+}
+
+function toShortTimestamp(input?: string): string {
+  const date = input ? new Date(input) : new Date();
+  if (Number.isNaN(date.getTime())) {
+    const now = new Date();
+    return `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+  }
+  return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}_${String(date.getHours()).padStart(2, '0')}${String(date.getMinutes()).padStart(2, '0')}`;
+}
+
+function slugify(value: string, fallback = 'query'): string {
+  const normalized = (value || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+  return (normalized || fallback).slice(0, 64);
+}
+
 const client = axios.create({
   baseURL: '/api',
   timeout: 600_000, // 10 min — dynamic pipeline can be very slow
@@ -62,4 +82,33 @@ export async function getStatus(): Promise<StatusResponse> {
 export async function getTrace(executionId: string): Promise<unknown> {
   const { data } = await client.get(`/traces/${executionId}`);
   return data;
+}
+
+/** Download comprehensive report as PDF or Markdown */
+export async function downloadReport(executionId: string, format: 'pdf' | 'md', options?: DownloadReportOptions): Promise<void> {
+  const shortTs = toShortTimestamp(options?.timestamp);
+  const safeQuery = slugify(options?.queryText || 'query');
+  const res = await client.get(`/download-report`, {
+    params: {
+      execution_id: executionId,
+      format,
+      project_name: options?.projectName,
+      query_text: options?.queryText,
+      generated_at: options?.timestamp,
+    },
+    responseType: 'blob',
+    timeout: 120_000,
+  });
+
+  const blob = new Blob([res.data], {
+    type: format === 'pdf' ? 'application/pdf' : 'text/markdown;charset=utf-8',
+  });
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${safeQuery}_${shortTs}.${format === 'pdf' ? 'pdf' : 'md'}`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  window.URL.revokeObjectURL(url);
 }

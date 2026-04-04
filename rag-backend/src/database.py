@@ -22,6 +22,8 @@ class MongoDBClient:
     
     def connect(self):
         """Connect to MongoDB and initialize collections."""
+        if self.initialized:
+            return
         try:
             self.client = MongoClient(
                 Config.MONGO_URI,
