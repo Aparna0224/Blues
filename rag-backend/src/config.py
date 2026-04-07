@@ -1,4 +1,4 @@
-﻿"""Configuration management for RAG system."""
+"""Configuration management for RAG system."""
 
 import os
 from dotenv import load_dotenv
@@ -60,6 +60,8 @@ class Config:
     SOFT_FILTER_LOW_SEMANTIC_PENALTY = float(os.getenv("SOFT_FILTER_LOW_SEMANTIC_PENALTY", "0.7"))
     SOFT_FILTER_LOW_SEMANTIC_THRESHOLD = float(os.getenv("SOFT_FILTER_LOW_SEMANTIC_THRESHOLD", "0.35"))
     MIN_SCORE_THRESHOLD = float(os.getenv("MIN_SCORE_THRESHOLD", "0.005"))
+    ABSTRACT_HYBRID_BM25_WEIGHT = float(os.getenv("ABSTRACT_HYBRID_BM25_WEIGHT", "0.35"))
+    ABSTRACT_HYBRID_SEMANTIC_WEIGHT = float(os.getenv("ABSTRACT_HYBRID_SEMANTIC_WEIGHT", "0.65"))
     
     # OpenAlex API Settings
     # Rate: 100k credits/day with key, 100 credits/day without

@@ -71,6 +71,17 @@ class EvidenceExtractor:
         "prompt:",
     )
 
+    _HEADING_LINE_RE = re.compile(
+        r"^\s*(abstract|introduction|background|related\s+work|method(?:s|ology)?|approach|framework|architecture|results?|evaluation|discussion|conclusion|future\s+work)\s*[:\-]?\s*$",
+        re.IGNORECASE,
+    )
+
+    # Pre-compiled patterns for junk detection
+    _AUTHOR_LIST_RE = re.compile(
+        r'^[A-Z]\.\s+[A-Z][a-z]+,?\s+[A-Z]\.\s+[A-Z][a-z]+'
+    )
+    _NUMBERED_REF_RE = re.compile(r'^\[\d+\]\s+[A-Z]')
+
     @classmethod
     def _is_junk_sentence(cls, sentence: str) -> bool:
         """Return True if the sentence looks like a citation, header, or noise."""
@@ -79,6 +90,28 @@ class EvidenceExtractor:
 
         # Too short to be meaningful content
         if len(words) < 3:
+            return True
+
+        # Author list pattern: "M. Leo, F. Tan, T. Miao"
+        if cls._AUTHOR_LIST_RE.match(s):
+            return True
+
+        # Numbered reference: "[1] Smith, J. (2023). Title..."
+        if cls._NUMBERED_REF_RE.match(s):
+            return True
+
+        # DOI lines
+        if s.lower().startswith("https://doi") or s.lower().startswith("doi:"):
+            return True
+
+        # Lines that are mostly punctuation and numbers (bibliography entries)
+        letters = sum(1 for c in s if c.isalpha())
+        if letters > 0 and (len(s) - letters) / len(s) > 0.45 and len(words) < 12:
+            return True
+
+        # Require minimum meaningful word count for evidence sentences
+        meaningful_words = [w for w in words if len(w) > 3]
+        if len(meaningful_words) < 4:
             return True
 
         # Mostly uppercase (journal header / title block)
@@ -104,6 +137,36 @@ class EvidenceExtractor:
         if lower.startswith(cls._PROMPT_NOISE_PREFIXES):
             return True
 
+        return False
+
+    @classmethod
+    def _clean_sentence(cls, sentence: str) -> str:
+        """Normalize sentence text and strip citation/header artifacts."""
+        if not sentence:
+            return ""
+        s = sentence.strip()
+        s = re.sub(r"\[(\d+|\d+\s*[-,]\s*\d+)\]", "", s)
+        s = re.sub(r"\(\s*\d{4}\s*\)", "", s)
+        s = re.sub(r"\bet\s+al\.?[,]?\s*\(?\d{4}\)?", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"\s+", " ", s).strip(" -:;,.\t")
+        return s
+
+    @classmethod
+    def _is_broken_fragment(cls, sentence: str) -> bool:
+        """Identify broken OCR fragments and non-readable lines."""
+        s = (sentence or "").strip()
+        if not s:
+            return True
+        if cls._HEADING_LINE_RE.match(s):
+            return True
+        if len(s.split()) < 5:
+            return True
+        if s.count(" ") <= 1 and len(s) > 20:
+            return True
+        if re.search(r"[\|_]{2,}", s):
+            return True
+        if re.search(r"\b(fig\.?|table|section)\s*\d+\b", s, flags=re.IGNORECASE):
+            return True
         return False
 
     @classmethod
@@ -146,6 +209,7 @@ class EvidenceExtractor:
             clean_text = " ".join(text.replace("\n", " ").split())
             sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", clean_text) if s.strip()]
             sentences = [s if s.endswith((".", "!", "?")) else f"{s}." for s in sentences]
+
         # Filter out very short sentences (likely noise)
         sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
 
@@ -154,9 +218,88 @@ class EvidenceExtractor:
             sentences = [s for s in sentences if not s.strip().endswith("?")]
         
         # Filter out junk sentences (citations, headers, numeric noise)
-        sentences = [s for s in sentences if not self._is_junk_sentence(s)]
+        cleaned: List[str] = []
+        for s in sentences:
+            c = self._clean_sentence(s)
+            if not c:
+                continue
+            if self._is_junk_sentence(c) or self._is_broken_fragment(c):
+                continue
+            cleaned.append(c)
+        return cleaned
 
-        return sentences
+    def _score_sentences_in_order(self, query: str, sentences: List[str]) -> List[float]:
+        """Return relevance scores preserving sentence order."""
+        if not sentences:
+            return []
+
+        if self.embedder is None:
+            q_terms = self._tokenize_terms(query)
+            scores: List[float] = []
+            for s in sentences:
+                s_terms = self._tokenize_terms(s)
+                if not q_terms or not s_terms:
+                    scores.append(0.0)
+                else:
+                    scores.append(len(q_terms.intersection(s_terms)) / max(1, len(q_terms.union(s_terms))))
+            return [float(x) for x in scores]
+
+        query_embedding = self.embedder.embed_text(query)
+        sentence_embeddings = self.embedder.embed_batch(sentences)
+        return [float(np.dot(query_embedding, sentence_embeddings[i])) for i in range(len(sentences))]
+
+    def select_best_paragraph(
+        self,
+        query: str,
+        text: str,
+        min_similarity: float = Config.EVIDENCE_MIN_SIMILARITY,
+        min_sentences: int = 3,
+        max_sentences: int = 5,
+    ) -> Dict[str, Any]:
+        """Select a clean, consecutive evidence paragraph (3–5 sentences)."""
+        sentences = self.split_into_sentences(text)
+        if not sentences:
+            return {
+                "best_paragraph": text[:220] if text else "",
+                "best_score": 0.0,
+                "start": 1,
+                "end": 1,
+                "all_sentences": [],
+                "below_threshold": True,
+            }
+
+        scores = self._score_sentences_in_order(query, sentences)
+        if not scores:
+            return {
+                "best_paragraph": sentences[0],
+                "best_score": 0.0,
+                "start": 1,
+                "end": 1,
+                "all_sentences": list(zip(sentences, [0.0] * len(sentences))),
+                "below_threshold": True,
+            }
+
+        best = {"score": -1.0, "start": 0, "end": 1}
+        max_len = min(max_sentences, len(sentences))
+        min_len = min(min_sentences, max_len)
+        for win_len in range(min_len, max_len + 1):
+            for start in range(0, len(sentences) - win_len + 1):
+                end = start + win_len
+                window_scores = scores[start:end]
+                avg_score = sum(window_scores) / max(1, len(window_scores))
+                if avg_score > best["score"]:
+                    best = {"score": avg_score, "start": start, "end": end}
+
+        paragraph = " ".join(sentences[best["start"]:best["end"]]).strip()
+        below_threshold = float(best["score"]) < float(min_similarity)
+        return {
+            "best_paragraph": paragraph,
+            "best_score": float(best["score"]),
+            "start": best["start"] + 1,
+            "end": best["end"],
+            "all_sentences": list(zip(sentences, scores)),
+            "below_threshold": below_threshold,
+        }
     
     def compute_sentence_similarity(
         self, 
@@ -224,51 +367,18 @@ class EvidenceExtractor:
         Returns:
             Dictionary with best sentence, score, and all sentence scores
         """
-        sentences = self.split_into_sentences(text)
-        
-        if not sentences:
-            return {
-                "best_sentence": text[:200] if text else "",
-                "best_score": 0.0,
-                "all_sentences": []
-            }
-        
-        similarities = self.compute_sentence_similarity(query, sentences)
-        
-        if not similarities:
-            return {
-                "best_sentence": sentences[0] if sentences else "",
-                "best_score": 0.0,
-                "all_sentences": []
-            }
-        
-        min_keyword_overlap = max(0, int(Config.EVIDENCE_KEYWORD_MIN_OVERLAP))
-
-        selected_sentence = ""
-        selected_score = 0.0
-        for cand_sentence, cand_score in similarities:
-            if self._has_query_term_overlap(query, cand_sentence, min_keyword_overlap):
-                selected_sentence = cand_sentence
-                selected_score = cand_score
-                break
-
-        if not selected_sentence:
-            selected_sentence, selected_score = similarities[0]
-        
-        # If best score is below threshold, return empty
-        if selected_score < min_similarity:
-            return {
-                "best_sentence": selected_sentence,
-                "best_score": selected_score,
-                "all_sentences": similarities,
-                "below_threshold": True
-            }
-        
+        paragraph = self.select_best_paragraph(
+            query=query,
+            text=text,
+            min_similarity=min_similarity,
+            min_sentences=3,
+            max_sentences=5,
+        )
         return {
-            "best_sentence": selected_sentence,
-            "best_score": selected_score,
-            "all_sentences": similarities,
-            "below_threshold": False
+            "best_sentence": paragraph.get("best_paragraph", ""),
+            "best_score": float(paragraph.get("best_score", 0.0) or 0.0),
+            "all_sentences": paragraph.get("all_sentences", []),
+            "below_threshold": bool(paragraph.get("below_threshold", False)),
         }
     
     def extract_evidence_from_chunks(
@@ -301,10 +411,16 @@ class EvidenceExtractor:
         if self.embedder is None:
             enhanced_chunks = []
             for chunk in chunks:
-                sel = self.select_best_sentence(query, chunk.get("text", ""))
+                sel = self.select_best_paragraph(
+                    query=query,
+                    text=chunk.get("text", ""),
+                    min_similarity=Config.EVIDENCE_MIN_SIMILARITY,
+                    min_sentences=3,
+                    max_sentences=5,
+                )
                 enhanced_chunks.append({
                     **chunk,
-                    "evidence_sentence": sel.get("best_sentence", ""),
+                    "evidence_sentence": sel.get("best_paragraph", ""),
                     "evidence_score": float(sel.get("best_score", 0.0) or 0.0),
                     "sentence_scores": sel.get("all_sentences", []),
                     "evidence_below_threshold": bool(sel.get("below_threshold", False)),
@@ -354,11 +470,19 @@ class EvidenceExtractor:
             chunk_embs = sentence_embeddings[start:end]
             scores = [float(np.dot(query_embedding, emb)) for emb in chunk_embs]
 
-            # Sort by score descending
-            indexed_scores = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
-            best_idx, best_score = indexed_scores[0]
-            best_sentence = chunk_sents[best_idx]
+            # Select top 3–5 consecutive sentences by average relevance
+            best = {"score": -1.0, "start": 0, "end": 1}
+            max_len = min(5, len(chunk_sents))
+            min_len = min(3, max_len)
+            for win_len in range(min_len, max_len + 1):
+                for w_start in range(0, len(chunk_sents) - win_len + 1):
+                    w_end = w_start + win_len
+                    avg_score = sum(scores[w_start:w_end]) / max(1, win_len)
+                    if avg_score > best["score"]:
+                        best = {"score": avg_score, "start": w_start, "end": w_end}
 
+            best_sentence = " ".join(chunk_sents[best["start"]:best["end"]]).strip()
+            best_score = float(best["score"])
             below_threshold = best_score < min_similarity
 
             enhanced_chunk = {
@@ -370,6 +494,7 @@ class EvidenceExtractor:
 
             # Add top N sentences if requested
             if top_n_sentences > 1:
+                indexed_scores = sorted(enumerate(scores), key=lambda x: x[1], reverse=True)
                 enhanced_chunk["top_sentences"] = [
                     {"sentence": chunk_sents[idx], "score": sc}
                     for idx, sc in indexed_scores[:top_n_sentences]

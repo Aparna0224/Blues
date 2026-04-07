@@ -132,14 +132,53 @@ class DynamicRetriever:
         print(f"     → Already in DB: {len(existing_paper_ids)} (reusing)")
         print(f"     → New papers: {len(new_paper_ids)}")
         
-        # Step 4: Score abstract relevance against the query
-        print(f"   🔍 Scoring abstract relevance...")
+        # Step 4: Score abstract relevance using HYBRID scoring (BM25 + cosine)
+        print(f"   🔍 Scoring abstract relevance (hybrid BM25 + cosine)...")
         query_emb = self.embedder.embed_text(main_query)
         search_embs = [self.embedder.embed_text(sq) for sq in search_queries]
         all_query_embs = search_embs + [query_emb]
         
+        # Build a temporary BM25 index over abstracts for keyword matching
+        from rank_bm25 import BM25Okapi
+        import re as _re
+        
+        def _bm25_tokenize(text: str) -> list:
+            """Tokenize text the same way BM25Index does."""
+            return [
+                w for w in _re.findall(r'[a-z0-9]+', (text or "").lower())
+                if len(w) > 1
+            ]
+        
+        abstract_texts = []
+        abstract_pids = []
+        for pid, paper in unique_papers.items():
+            abstract = paper.get("abstract", "")
+            if abstract:
+                abstract_texts.append(abstract)
+                abstract_pids.append(pid)
+        
+        # Build BM25 over abstracts
+        tokenized_abstracts = [_bm25_tokenize(a) for a in abstract_texts]
+        bm25_abstract = BM25Okapi(tokenized_abstracts) if tokenized_abstracts else None
+        
+        # Compute BM25 scores for all queries against all abstracts
+        bm25_abstract_scores = {}  # pid -> max bm25 score (normalized 0-1)
+        if bm25_abstract and abstract_pids:
+            for sq in search_queries + [main_query]:
+                tokenized_query = _bm25_tokenize(sq)
+                raw_scores = bm25_abstract.get_scores(tokenized_query)
+                max_raw = max(raw_scores) + 1e-9
+                for idx, pid in enumerate(abstract_pids):
+                    normalized = float(raw_scores[idx]) / max_raw
+                    bm25_abstract_scores[pid] = max(
+                        bm25_abstract_scores.get(pid, 0.0), normalized
+                    )
+        
         relevant_papers = []
         irrelevant_count = 0
+        
+        bm25_weight = Config.ABSTRACT_HYBRID_BM25_WEIGHT
+        semantic_weight = Config.ABSTRACT_HYBRID_SEMANTIC_WEIGHT
         
         for pid, paper in unique_papers.items():
             abstract = paper.get("abstract", "")
@@ -148,10 +187,16 @@ class DynamicRetriever:
                 continue
             
             abstract_emb = self.embedder.embed_text(abstract)
-            max_score = max(float(np.dot(abstract_emb, qe)) for qe in all_query_embs)
-            paper["_abstract_relevance"] = max_score
+            cosine_score = max(float(np.dot(abstract_emb, qe)) for qe in all_query_embs)
+            bm25_score = bm25_abstract_scores.get(pid, 0.0)
             
-            if max_score >= self.ABSTRACT_RELEVANCE_THRESHOLD:
+            # Hybrid abstract score
+            hybrid_abstract_score = (semantic_weight * cosine_score) + (bm25_weight * bm25_score)
+            paper["_abstract_relevance"] = hybrid_abstract_score
+            paper["_abstract_cosine"] = cosine_score
+            paper["_abstract_bm25"] = bm25_score
+            
+            if hybrid_abstract_score >= self.ABSTRACT_RELEVANCE_THRESHOLD:
                 relevant_papers.append(paper)
             else:
                 irrelevant_count += 1
@@ -224,6 +269,8 @@ class DynamicRetriever:
         
         if reuse_ids:
             existing_chunks = list(chunks_collection.find({"paper_id": {"$in": reuse_ids}}))
+            # Re-label old chunks that still have section="body"
+            existing_chunks = self._relabel_body_chunks(existing_chunks, chunks_collection)
             print(f"   ✓ Retrieved {len(existing_chunks)} existing chunks from DB")
         
         # Step 7: Chunk relevant papers (new or those with fresh full text)
@@ -456,6 +503,61 @@ class DynamicRetriever:
         
         return results
     
+    def _relabel_body_chunks(self, chunks: list, chunks_collection) -> list:
+        """Re-infer section for old chunks labeled 'body'."""
+        relabeled = []
+        relabel_count = 0
+        for chunk in chunks:
+            if chunk.get("section") not in ("body", None, ""):
+                relabeled.append(chunk)
+                continue
+            # Use keyword signals on the chunk text
+            text = chunk.get("text", "")
+            inferred = self._infer_section_from_text(text)
+            if inferred != "body":
+                chunk = dict(chunk)
+                chunk["section"] = inferred
+                if chunk.get("metadata"):
+                    chunk["metadata"]["section"] = inferred
+                # Update in MongoDB for future reuse
+                try:
+                    chunks_collection.update_one(
+                        {"chunk_id": chunk["chunk_id"]},
+                        {"$set": {"section": inferred, "metadata.section": inferred}}
+                    )
+                    relabel_count += 1
+                except Exception:
+                    pass
+            relabeled.append(chunk)
+        if relabel_count:
+            print(f"   ✓ Re-labeled {relabel_count} 'body' chunks with inferred sections")
+        return relabeled
+
+    @staticmethod
+    def _infer_section_from_text(text: str) -> str:
+        """Lightweight section inference using keyword signals."""
+        t = text.lower()
+        if any(k in t for k in ["we propose", "this paper presents", "we introduce",
+                                  "in this work", "our approach", "the proposed"]):
+            return "methodology"
+        if any(k in t for k in ["accuracy", "f1 score", "precision", "recall",
+                                  "outperforms", "we achieve", "results show",
+                                  "evaluation on", "benchmark"]):
+            return "results"
+        if any(k in t for k in ["in conclusion", "future work", "we conclude",
+                                  "limitations", "this work demonstrates"]):
+            return "conclusion"
+        if any(k in t for k in ["we discuss", "this suggests", "implication",
+                                  "our analysis shows", "we observe that"]):
+            return "discussion"
+        if any(k in t for k in ["related work", "prior work", "previous studies",
+                                  "background", "in this section, we review"]):
+            return "related_work"
+        if any(k in t for k in ["introduction", "problem statement", "motivation",
+                                  "this paper is organized", "remainder of"]):
+            return "introduction"
+        return "body"
+
     def _extract_evidence(self, query: str, chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
         Extract sentence-level evidence from chunks.

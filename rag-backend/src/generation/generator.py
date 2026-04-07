@@ -26,7 +26,7 @@ class AnswerGenerator:
     CONFIDENCE_W1 = 0.45
     CONFIDENCE_W2 = 0.35
     CONFIDENCE_W3 = 0.20
-    SUBQUERY_MATCH_THRESHOLD = 0.50
+    SUBQUERY_MATCH_THRESHOLD = 0.60
     SUBQUERY_STRONG_MATCH_THRESHOLD = 0.60
     FALLBACK_TOP_K_PER_SUBQ = 2
     INTENT_KEYWORDS = {
@@ -41,6 +41,9 @@ class AnswerGenerator:
         "general overview",
         "broad introduction",
         "blockchain basics",
+    ]
+    DATASET_SIGNALS = [
+        "dataset", "datasets", "benchmark", "corpus", "training data", "data collection", "data source"
     ]
     
     def __init__(self):
@@ -281,6 +284,30 @@ class AnswerGenerator:
 
         text_lower = text.lower()
 
+        # Pre-check: trust labeled section if it's already meaningful
+        normalized_label = self._normalize_section(labeled_section)
+        if normalized_label not in {"unknown", "body"}:
+            # Only override if very strong contradicting signal
+            STRONG_RESULTS_SIGNALS = [
+                "accuracy:", "f1:", "precision:", "recall:", "auc-roc",
+                "mean average precision", "outperforms all baselines"
+            ]
+            if normalized_label != "Results" and any(
+                s in text_lower for s in STRONG_RESULTS_SIGNALS
+            ):
+                return "Results"
+            return normalized_label
+
+        # Explicit override rules for section correction.
+        if any(k in text_lower for k in ["in this paper", "we introduce"]):
+            return "Introduction"
+        if any(k in text_lower for k in ["we propose", "framework", "architecture"]):
+            return "Methodology"
+        if any(k in text_lower for k in ["results show", "evaluation"]):
+            return "Results"
+        if any(k in text_lower for k in ["limitation", "future work"]):
+            return "Discussion"
+
         # Priority 1: explicit markdown/style headers
         if re.search(r"(^|\n)\s{0,3}(#\s*|##\s*|\d+\.?\s+)?introduction\b", text_lower):
             return "Introduction"
@@ -519,6 +546,23 @@ class AnswerGenerator:
         union = len(ta.union(tb))
         return inter / union if union else 0.0
 
+    @staticmethod
+    def _keyword_overlap(a: str, b: str) -> float:
+        """Normalized keyword overlap for soft scoring."""
+        ta = {
+            t.strip(".,;:()[]{}\"'`").lower()
+            for t in (a or "").split()
+            if len(t.strip(".,;:()[]{}\"'`")) > 2
+        }
+        tb = {
+            t.strip(".,;:()[]{}\"'`").lower()
+            for t in (b or "").split()
+            if len(t.strip(".,;:()[]{}\"'`")) > 2
+        }
+        if not ta or not tb:
+            return 0.0
+        return len(ta.intersection(tb)) / max(1, min(len(ta), len(tb)))
+
     def _section_weight(self, sub_question: str, section: str) -> float:
         sq = (sub_question or "").lower()
         sec = (section or "unknown").lower()
@@ -555,6 +599,18 @@ class AnswerGenerator:
             return has_dataset_keyword and not has_only_detection
 
         return any(w in text for w in keywords)
+
+    @staticmethod
+    def _is_dataset_subquestion(sub_question: str) -> bool:
+        sq = (sub_question or "").lower()
+        return any(k in sq for k in ["dataset", "data", "training"])
+
+    def _dataset_signal_score(self, chunk_text: str) -> float:
+        text = (chunk_text or "").lower()
+        if not text:
+            return 0.0
+        hits = sum(1 for s in self.DATASET_SIGNALS if s in text)
+        return min(1.0, hits / 3.0)
 
     def _is_background_drift(self, sub_question: str, chunk_text: str, user_level: str) -> bool:
         level = (user_level or "auto").lower()
@@ -652,6 +708,29 @@ class AnswerGenerator:
         text: str,
         evidence_extractor,
     ) -> Dict[str, Any]:
+        if evidence_extractor and hasattr(evidence_extractor, "select_best_paragraph"):
+            selected = evidence_extractor.select_best_paragraph(
+                query=sub_question,
+                text=text,
+                min_similarity=0.0,
+                min_sentences=self.PARAGRAPH_MIN_SENTENCES,
+                max_sentences=self.PARAGRAPH_MAX_SENTENCES,
+            )
+            paragraph = (selected.get("best_paragraph") or "").strip()
+            if paragraph:
+                all_scored = selected.get("all_sentences") or []
+                best_score = float(selected.get("best_score", 0.0) or 0.0)
+                best_sentence = ""
+                if all_scored:
+                    best_sentence = max(all_scored, key=lambda x: float(x[1] or 0.0))[0]
+                return {
+                    "paragraph": paragraph,
+                    "start": int(selected.get("start", 1) or 1),
+                    "end": int(selected.get("end", 1) or 1),
+                    "best_sentence": best_sentence,
+                    "best_score": best_score,
+                }
+
         sentences = [self._clean_sentence(s) for s in self._split_sentences(text)]
         sentences = [s for s in sentences if s and not self._is_noise_sentence(s)]
         if not sentences:
@@ -722,50 +801,141 @@ class AnswerGenerator:
 
     def _build_subquestion_conclusion(self, sub_question: str, units: List[Dict[str, Any]]) -> str:
         if not units:
-            return "The available evidence is insufficient to draw a reliable conclusion for this sub-question."
+            return "Insufficient evidence to draw a conclusion for this sub-question."
 
-        joined = " ".join((u.get("claim") or "") + " " + (u.get("text") or "") for u in units).lower()
-        subq = (sub_question or "").lower()
-
-        method_labels: List[str] = []
-        if any(k in joined for k in ["cnn", "deep learning", "neural", "resnet", "transformer"]):
-            method_labels.append("deep-learning models")
-        if any(k in joined for k in ["otsu", "threshold", "morphological", "watershed", "hsv", "rgb", "cmyk"]):
-            method_labels.append("rule-based image-processing methods")
-        if any(k in joined for k in ["manual", "microscopy", "expert review"]):
-            method_labels.append("manual analytical workflows")
-        if not method_labels:
-            method_labels.append("evidence-grounded computational approaches")
-
-        purpose = "to improve reliability and automation for the target task"
-        if any(k in subq for k in ["vulnerab", "risk", "threat"]):
-            purpose = "to identify and characterize vulnerability patterns"
-        elif any(k in subq for k in ["detect", "mitigat", "prevent"]):
-            purpose = "to support accurate detection and practical mitigation decisions"
-        elif any(k in subq for k in ["dataset", "benchmark", "corpus"]):
-            purpose = "to curate benchmark resources and improve evaluation coverage"
-        elif any(k in joined for k in ["detect", "detection", "recogniz", "identify"]):
-            purpose = "to improve detection and recognition of relevant patterns"
-        elif any(k in joined for k in ["classif", "prediction", "predict"]):
-            purpose = "to strengthen classification and predictive performance"
-
-        limitation = "The evidence remains heterogeneous because papers evaluate different datasets and operating conditions."
-        has_conflict = len(ConflictDetector.detect_conflicts(units)) > 0
-        if has_conflict:
-            limitation = "Some claims are not directly compatible across papers, indicating method-dependent conclusions under similar topics."
-        elif len(method_labels) > 1:
-            limitation = "The methods are complementary rather than identical, so performance differences mainly reflect design trade-offs rather than direct contradiction."
-
-        confidence_label = self._confidence_band(
-            sum(float(u.get("confidence", 0.0) or 0.0) for u in units[:4]) / max(1, min(4, len(units)))
-        ).lower()
-        methods_text = ", ".join(method_labels[:-1]) + (" and " + method_labels[-1] if len(method_labels) > 1 else method_labels[0])
+        paper_names = list({u.get("paper_title", "Unknown")[:35] for u in units})
+        sections = list({u.get("section", "unknown") for u in units})
+        avg_conf = sum(float(u.get("confidence", 0)) for u in units) / max(1, len(units))
 
         return (
-            f"For this sub-question, the evidence indicates that {methods_text} are used {purpose}. "
-            f"Across papers, these methods generally support the same research objective while varying in implementation and evidence strength. "
-            f"{limitation} Overall support for this conclusion is {confidence_label} confidence."
+            f"Evidence drawn from {len(paper_names)} paper(s) "
+            f"({'; '.join(paper_names[:3])}{'...' if len(paper_names) > 3 else ''}) "
+            f"across sections: {', '.join(sections)}. "
+            f"Average evidence confidence: {avg_conf:.2f}. "
+            f"See the AI Research Summary section for synthesized interpretation."
         )
+
+    def _extract_signal_sentences(self, text: str, keywords: List[str], max_items: int = 2) -> List[str]:
+        if not text:
+            return []
+        sents = [self._clean_sentence(s) for s in self._split_sentences(text)]
+        sents = [s for s in sents if s and not self._is_noise_sentence(s)]
+        hits: List[str] = []
+        for s in sents:
+            low = s.lower()
+            if any(k in low for k in keywords):
+                hits.append(s)
+                if len(hits) >= max_items:
+                    break
+        return hits
+
+    def _build_paper_profiles(self, chunks: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+        """Create paper-level structured facets for downstream reasoning."""
+        profiles: Dict[str, Dict[str, Any]] = {}
+        for c in chunks:
+            pid = str(c.get("paper_id") or "")
+            if not pid:
+                continue
+            if pid not in profiles:
+                profiles[pid] = {
+                    "paper_id": pid,
+                    "paper_title": c.get("paper_title", "Unknown"),
+                    "paper_year": c.get("paper_year", "N/A"),
+                    "dataset": [],
+                    "method": [],
+                    "results": [],
+                    "application": [],
+                    "chunks": [],
+                }
+
+            text = c.get("text", "")
+            profiles[pid]["dataset"].extend(
+                self._extract_signal_sentences(
+                    text,
+                    ["dataset", "benchmark", "corpus", "training data", "data collection"],
+                )
+            )
+            profiles[pid]["method"].extend(
+                self._extract_signal_sentences(
+                    text,
+                    ["method", "approach", "framework", "pipeline", "algorithm", "architecture"],
+                )
+            )
+            profiles[pid]["results"].extend(
+                self._extract_signal_sentences(
+                    text,
+                    ["result", "accuracy", "f1", "precision", "recall", "outperform", "evaluation"],
+                )
+            )
+            profiles[pid]["application"].extend(
+                self._extract_signal_sentences(
+                    text,
+                    ["application", "use case", "deployment", "real-world", "practical", "scenario"],
+                )
+            )
+            profiles[pid]["chunks"].append(c)
+
+        for p in profiles.values():
+            for facet in ["dataset", "method", "results", "application"]:
+                seen = set()
+                unique = []
+                for v in p[facet]:
+                    key = v.strip().lower()
+                    if key and key not in seen:
+                        seen.add(key)
+                        unique.append(v)
+                p[facet] = unique[:4]
+        return profiles
+
+    def _build_grounded_comparison(self, sub_question: str, paper_profiles: Dict[str, Dict[str, Any]]) -> str:
+        if not paper_profiles:
+            return "Insufficient evidence for cross-paper comparison."
+
+        lines = []
+        profiles = list(paper_profiles.values())[:5]
+
+        # Per-paper method statement (cite actual extracted sentences)
+        method_lines = []
+        for p in profiles:
+            name = f"{p.get('paper_title', 'Unknown')[:40]} ({p.get('paper_year', 'N/A')})"
+            methods = p.get("method", [])
+            if methods:
+                method_lines.append(f"  • {name}: {methods[0][:120]}")
+
+        # Per-paper result statement
+        result_lines = []
+        for p in profiles:
+            name = f"{p.get('paper_title', 'Unknown')[:40]} ({p.get('paper_year', 'N/A')})"
+            results = p.get("results", [])
+            if results:
+                result_lines.append(f"  • {name}: {results[0][:120]}")
+
+        # Agreement or disagreement statement
+        all_units = [
+            u for p in profiles for u in p.get("chunks", [])
+        ]
+        conflicts = ConflictDetector.detect_conflicts(all_units)
+
+        if method_lines:
+            lines.append(f"Method approaches across {len(profiles)} paper(s):")
+            lines.extend(method_lines)
+        if result_lines:
+            lines.append(f"\nReported outcomes:")
+            lines.extend(result_lines)
+        if conflicts:
+            c = conflicts[0]
+            lines.append(
+                f"\nConflict: {c.get('a', {}).get('paper_title', 'Paper A')[:30]} vs "
+                f"{c.get('b', {}).get('paper_title', 'Paper B')[:30]} on overlapping claims "
+                f"(type: {c.get('type', 'unknown')}, strength: {c.get('strength', 0):.2f})"
+            )
+        else:
+            lines.append(
+                f"\nConsensus: The {len(profiles)} paper(s) are directionally "
+                f"aligned with no strongly incompatible claims detected."
+            )
+
+        return "\n".join(lines) if lines else "No comparison data available."
 
     def _build_evidence_unit(
         self,
@@ -776,9 +946,6 @@ class AnswerGenerator:
     ) -> Dict[str, Any] | None:
         text = chunk.get("text", "")
         if not text:
-            return None
-
-        if subquery_similarity < self.SUBQUERY_HARD_GATE_THRESHOLD:
             return None
 
         evidence_sentence = chunk.get("evidence_sentence", "")
@@ -804,9 +971,10 @@ class AnswerGenerator:
         # STEP 3: Resolve TRUE section with correction tracking
         true_section, section_corrected = self._resolve_true_section(chunk)
         
-        # STEP 3: Apply strict section gating
+        # STEP 3: Soft section gating (penalty, not hard-drop)
+        section_penalty = 0.0
         if not self._section_allowed_for_subquestion(true_section, sub_question):
-            return None
+            section_penalty = 0.12
         
         section_weight = self._section_weight(sub_question, true_section)
 
@@ -819,11 +987,24 @@ class AnswerGenerator:
                 + (self.CONFIDENCE_W3 * verification_score),
             ),
         )
+        keyword_overlap = float(
+            chunk.get("keyword_overlap", self._keyword_overlap(sub_question, snippet)) or 0.0
+        )
+        base_score = (
+            (0.4 * float(chunk.get("rrf_score", 0.0) or 0.0))
+            + (0.3 * subquery_similarity)
+            + (0.2 * evidence_score)
+            + (0.1 * keyword_overlap)
+        )
+        similarity_penalty = 0.0
+        if subquery_similarity < self.SUBQUERY_HARD_GATE_THRESHOLD:
+            similarity_penalty = (self.SUBQUERY_HARD_GATE_THRESHOLD - subquery_similarity) * 0.25
+
         final_score = max(
             0.0,
             min(
                 1.0,
-                ((0.5 * similarity_score) + (0.3 * evidence_score) + (0.2 * subquery_similarity)) * section_weight,
+                base_score - similarity_penalty - section_penalty,
             ),
         )
 
@@ -1007,8 +1188,50 @@ class AnswerGenerator:
             "stats": {},
         }
         
-        # Match chunks to sub-questions based on similarity
-        chunk_assignments = self._assign_chunks_to_subquestions(sub_questions, chunks)
+        # Coverage-first assignment (soft scoring, no hard filtering)
+        try:
+            chunk_assignments = self._assign_chunks_to_subquestions(
+                sub_questions,
+                chunks,
+                subquestion_intents=subquestion_intents,
+            )
+        except TypeError:
+            chunk_assignments = self._assign_chunks_to_subquestions(sub_questions, chunks)
+
+        # Adaptive retry (generation-side): broaden assignment if usable evidence is weak.
+        min_total_target = max(len(sub_questions) * self.MIN_CHUNKS_PER_SUBQ, self.MIN_CHUNKS_PER_SUBQ)
+        usable_now = sum(
+            1
+            for sq in sub_questions
+            for c in chunk_assignments.get(sq, [])
+            if float(c.get("subquery_similarity", 0.0) or 0.0) >= 0.50
+        )
+        if usable_now < min_total_target:
+            try:
+                retry_assignments = self._assign_chunks_to_subquestions(
+                    sub_questions,
+                    chunks,
+                    adaptive_round=1,
+                    subquestion_intents=subquestion_intents,
+                )
+            except TypeError:
+                # Backward compatibility for monkeypatched/stubbed callables that
+                # still expose the legacy 2-arg signature.
+                retry_assignments = self._assign_chunks_to_subquestions(sub_questions, chunks)
+            for sq in sub_questions:
+                merged = chunk_assignments.get(sq, []) + retry_assignments.get(sq, [])
+                dedup: Dict[str, Dict[str, Any]] = {}
+                for c in merged:
+                    cid = str(c.get("chunk_id", ""))
+                    if not cid:
+                        continue
+                    if cid not in dedup or float(c.get("final_score", 0.0) or 0.0) > float(dedup[cid].get("final_score", 0.0) or 0.0):
+                        dedup[cid] = c
+                chunk_assignments[sq] = sorted(
+                    dedup.values(),
+                    key=lambda x: float(x.get("final_score", 0.0) or 0.0),
+                    reverse=True,
+                )
 
         evidence_extractor = None
         try:
@@ -1063,71 +1286,243 @@ class AnswerGenerator:
                     dedup_assigned[cid] = chunk
             assigned_chunks = list(dedup_assigned.values())
 
-            # Per-subquestion re-scoring over ALL retrieved chunks (no global pre-filtering).
+            dataset_subq = self._is_dataset_subquestion(sub_q)
             rescored_chunks: List[Dict[str, Any]] = []
-            if embedder and chunk_embeddings:
-                sq_emb = embedder.embed_text(sub_q)
-                for idx, chunk in enumerate(chunks):
-                    sq_score = float(np.dot(chunk_embeddings[idx], sq_emb))
-                    rescored_chunks.append({
-                        **chunk,
-                        "subquery_similarity": sq_score,
-                        "sub_question": sub_q,
-                    })
-            else:
-                for chunk in chunks:
-                    sq_score = self._lexical_similarity(sub_q, chunk.get("text", ""))
-                    rescored_chunks.append({
-                        **chunk,
-                        "subquery_similarity": float(sq_score),
-                        "sub_question": sub_q,
-                    })
+            for chunk in assigned_chunks:
+                text = chunk.get("text", "")
+                if not text:
+                    continue
 
-            filtered_chunks = [
-                chunk for chunk in rescored_chunks
-                if float(chunk.get("subquery_similarity", 0.0) or 0.0) >= self.SUBQUERY_MATCH_THRESHOLD
-                and self._chunk_matches_intent(chunk.get("text", ""), subq_intent)
-                and not self._is_background_drift(sub_q, chunk.get("text", ""), resolved_user_level)
-            ]
+                sq_score = float(chunk.get("subquery_similarity", 0.0) or 0.0)
+                evidence_score = float(chunk.get("evidence_score", 0.0) or 0.0)
+                rrf = float(chunk.get("rrf_score", 0.0) or 0.0)
+                kw_overlap = self._keyword_overlap(sub_q, text)
 
-            filtered_chunks.sort(
-                key=lambda c: float(c.get("subquery_similarity", 0.0) or 0.0),
-                reverse=True,
-            )
+                penalty = 0.0
+                if sq_score < 0.60:
+                    penalty += (0.60 - sq_score) * 0.35
+                if self._is_background_drift(sub_q, text, resolved_user_level):
+                    penalty += 0.15
 
+                if dataset_subq:
+                    ds_signal = self._dataset_signal_score(text)
+                    if ds_signal <= 0.0:
+                        penalty += 0.25
+                    else:
+                        sq_score = min(1.0, sq_score + 0.10 * ds_signal)
+
+                final_score = (
+                    (0.4 * rrf)
+                    + (0.3 * sq_score)
+                    + (0.2 * evidence_score)
+                    + (0.1 * kw_overlap)
+                    - penalty
+                )
+
+                rescored_chunks.append({
+                    **chunk,
+                    "subquery_similarity": sq_score,
+                    "keyword_overlap": kw_overlap,
+                    "penalty": penalty,
+                    "final_score": final_score,
+                    "sub_question": sub_q,
+                })
+
+            rescored_chunks.sort(key=lambda c: float(c.get("final_score", 0.0) or 0.0), reverse=True)
+
+            # Coverage guarantee with multi-stage fallback.
+            filtered_chunks = list(rescored_chunks[: self.MAX_CHUNKS_PER_SUBQ])
             fallback_triggered = False
-            if not filtered_chunks:
+            fallback_stages_used: List[str] = []
+
+            if len(filtered_chunks) < self.MIN_CHUNKS_PER_SUBQ:
                 fallback_triggered = True
-                fallback_chunks: List[Dict[str, Any]] = []
-                for chunk in global_top_chunks:
-                    if len(fallback_chunks) >= self.FALLBACK_TOP_K_PER_SUBQ:
+
+                # Stage 1: Include lower-ranked RRF results
+                stage1 = sorted(
+                    rescored_chunks,
+                    key=lambda x: float(x.get("rrf_score", 0.0) or 0.0),
+                    reverse=True,
+                )
+                if stage1:
+                    fallback_stages_used.append("stage1_lower_ranked_rrf")
+                for c in stage1:
+                    if len(filtered_chunks) >= self.MIN_CHUNKS_PER_SUBQ:
                         break
-                    cid = str(chunk.get("chunk_id", ""))
-                    if not cid:
+                    if c not in filtered_chunks:
+                        filtered_chunks.append(c)
+
+                # Stage 2: Relax similarity thresholds
+                stage2 = [
+                    c for c in rescored_chunks
+                    if float(c.get("subquery_similarity", 0.0) or 0.0) >= 0.35
+                ]
+                if stage2:
+                    fallback_stages_used.append("stage2_relaxed_similarity")
+                for c in stage2:
+                    if len(filtered_chunks) >= self.MIN_CHUNKS_PER_SUBQ:
+                        break
+                    if c not in filtered_chunks:
+                        filtered_chunks.append(c)
+
+                # Stage 3: Use global chunk pool
+                if len(filtered_chunks) < self.MIN_CHUNKS_PER_SUBQ:
+                    fallback_stages_used.append("stage3_global_pool")
+                    global_candidates = []
+                    for gc in global_top_chunks:
+                        text = gc.get("text", "")
+                        if not text:
+                            continue
+                        aligned = self._chunk_matches_intent(text, subq_intent)
+                        if not aligned and subq_intent == "methodology":
+                            aligned = self._lexical_similarity(sub_q, text) >= 0.03
+                        if not aligned:
+                            continue
+                        sq_score = max(
+                            self._lexical_similarity(sub_q, text),
+                            float(gc.get("similarity_score", 0.0) or 0.0) * 0.7,
+                        )
+                        kw_overlap = self._keyword_overlap(sub_q, text)
+                        score = (
+                            (0.4 * float(gc.get("rrf_score", 0.0) or 0.0))
+                            + (0.3 * sq_score)
+                            + (0.2 * float(gc.get("evidence_score", 0.0) or 0.0))
+                            + (0.1 * kw_overlap)
+                        )
+                        global_candidates.append({
+                            **gc,
+                            "subquery_similarity": sq_score,
+                            "keyword_overlap": kw_overlap,
+                            "final_score": score,
+                            "sub_question": sub_q,
+                        })
+                    global_candidates.sort(key=lambda x: float(x.get("final_score", 0.0) or 0.0), reverse=True)
+                    for c in global_candidates:
+                        if len(filtered_chunks) >= self.MIN_CHUNKS_PER_SUBQ:
+                            break
+                        if c not in filtered_chunks:
+                            filtered_chunks.append(c)
+
+                # Stage 4: Include abstract-based chunks
+                if len(filtered_chunks) < self.MIN_CHUNKS_PER_SUBQ:
+                    fallback_stages_used.append("stage4_abstract_chunks")
+                    abstract_chunks = [
+                        c for c in chunks
+                        if str((c.get("metadata") or {}).get("section", c.get("section", ""))).lower() == "abstract"
+                    ]
+                    abstract_chunks.sort(
+                        key=lambda x: float(x.get("rrf_score", x.get("similarity_score", 0.0)) or 0.0),
+                        reverse=True,
+                    )
+                    for c in abstract_chunks:
+                        if len(filtered_chunks) >= self.MIN_CHUNKS_PER_SUBQ:
+                            break
+                        aligned = self._chunk_matches_intent(c.get("text", ""), subq_intent)
+                        if not aligned and subq_intent == "methodology":
+                            aligned = self._lexical_similarity(sub_q, c.get("text", "")) >= 0.03
+                        if not aligned:
+                            continue
+                        if c not in filtered_chunks:
+                            filtered_chunks.append({
+                                **c,
+                                "subquery_similarity": max(
+                                    self._lexical_similarity(sub_q, c.get("text", "")),
+                                    float(c.get("similarity_score", 0.0) or 0.0) * 0.7,
+                                ),
+                                "keyword_overlap": self._keyword_overlap(sub_q, c.get("text", "")),
+                                "final_score": float(c.get("rrf_score", c.get("similarity_score", 0.0)) or 0.0),
+                                "sub_question": sub_q,
+                            })
+
+            # Deduplicate by chunk_id and keep strongest score
+            dedup_filtered: Dict[str, Dict[str, Any]] = {}
+            for c in filtered_chunks:
+                cid = str(c.get("chunk_id", ""))
+                if not cid:
+                    continue
+                if cid not in dedup_filtered or float(c.get("final_score", 0.0) or 0.0) > float(dedup_filtered[cid].get("final_score", 0.0) or 0.0):
+                    dedup_filtered[cid] = c
+            filtered_chunks = sorted(
+                dedup_filtered.values(),
+                key=lambda c: float(c.get("final_score", 0.0) or 0.0),
+                reverse=True,
+            )[: max(self.MAX_CHUNKS_PER_SUBQ, self.MIN_CHUNKS_PER_SUBQ)]
+
+            # Paper coverage guarantee: ensure at least MIN_PAPERS_PER_SUBQ papers.
+            paper_ids_now = {
+                str(c.get("paper_id", "")) for c in filtered_chunks if str(c.get("paper_id", ""))
+            }
+            if len(paper_ids_now) < self.MIN_PAPERS_PER_SUBQ:
+                fallback_triggered = True
+                if "paper_coverage_boost" not in fallback_stages_used:
+                    fallback_stages_used.append("paper_coverage_boost")
+
+                paper_candidates = []
+                for gc in global_top_chunks:
+                    pid = str(gc.get("paper_id", ""))
+                    if not pid or pid in paper_ids_now:
+                        continue
+                    text = gc.get("text", "")
+                    aligned = self._chunk_matches_intent(text, subq_intent)
+                    if not aligned and subq_intent == "methodology":
+                        aligned = self._lexical_similarity(sub_q, text) >= 0.03
+                    if not aligned:
                         continue
                     sq_score = max(
-                        float(chunk.get("similarity_score", 0.0) or 0.0),
-                        self._lexical_similarity(sub_q, chunk.get("text", "")),
+                        self._lexical_similarity(sub_q, text),
+                        float(gc.get("similarity_score", 0.0) or 0.0) * 0.7,
                     )
-                    fallback_chunks.append({
-                        **chunk,
+                    kw_overlap = self._keyword_overlap(sub_q, text)
+                    score = (
+                        (0.4 * float(gc.get("rrf_score", 0.0) or 0.0))
+                        + (0.3 * sq_score)
+                        + (0.2 * float(gc.get("evidence_score", 0.0) or 0.0))
+                        + (0.1 * kw_overlap)
+                    )
+                    paper_candidates.append({
+                        **gc,
                         "subquery_similarity": sq_score,
+                        "keyword_overlap": kw_overlap,
+                        "final_score": score,
                         "sub_question": sub_q,
                     })
-                filtered_chunks = fallback_chunks
+
+                paper_candidates.sort(key=lambda x: float(x.get("final_score", 0.0) or 0.0), reverse=True)
+                for c in paper_candidates:
+                    if len(paper_ids_now) >= self.MIN_PAPERS_PER_SUBQ:
+                        break
+                    cid = str(c.get("chunk_id", ""))
+                    if not cid:
+                        continue
+                    if cid not in {str(fc.get("chunk_id", "")) for fc in filtered_chunks}:
+                        filtered_chunks.append(c)
+                        pid = str(c.get("paper_id", ""))
+                        if pid:
+                            paper_ids_now.add(pid)
+
+            filtered_chunks = sorted(
+                filtered_chunks,
+                key=lambda c: float(c.get("final_score", 0.0) or 0.0),
+                reverse=True,
+            )[: max(self.MAX_CHUNKS_PER_SUBQ + 2, self.MIN_CHUNKS_PER_SUBQ)]
 
             if filtered_chunks:
                 output += f"Intent focus: {subq_intent} | User level: {resolved_user_level}\n\n"
 
             print(
                 f"SubQ: {sub_q} → assigned: {len(assigned_chunks)} → rescored: {len(rescored_chunks)} → after filter: {len(filtered_chunks)} "
-                f"→ fallback: {fallback_triggered}"
+                f"→ fallback: {fallback_triggered} → papers: {len({str(c.get('paper_id','')) for c in filtered_chunks if str(c.get('paper_id',''))})}"
             )
+            papers_used = len({str(c.get("paper_id", "")) for c in filtered_chunks if str(c.get("paper_id", ""))})
             subq_data["debug"] = {
                 "assigned": len(assigned_chunks),
                 "rescored": len(rescored_chunks),
                 "after_filter": len(filtered_chunks),
                 "fallback": fallback_triggered,
+                "fallback_used": fallback_triggered,
+                "fallback_stages": fallback_stages_used,
+                "fallback_triggered": fallback_triggered,
+                "num_papers_used": papers_used,
                 "intent": subq_intent,
                 "user_level": resolved_user_level,
             }
@@ -1182,6 +1577,7 @@ class AnswerGenerator:
 
             # STEP 6: Consolidate evidence by paper
             merged_evidence = self._merge_paper_evidence(units)
+            paper_profiles = self._build_paper_profiles(filtered_chunks)
             
             # STEP 8: Quality gate before output
             quality_check = self._quality_gate(merged_evidence)
@@ -1324,14 +1720,12 @@ class AnswerGenerator:
                 output += f"{ConflictDetector.no_conflict_explanation(units)}\n\n"
                 subq_data["conflicts"] = []
 
-            summary = ConflictDetector.comparison_summary(units, conflicts)
-            grounded = ConflictDetector.grounded_comparison_statements(units)
-            comparison = ConflictDetector.generate_literature_comparison(units)
+            comparison_text = self._build_grounded_comparison(sub_q, paper_profiles)
 
             output += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
             output += "📊 Comparison Summary\n"
-            output += f"{comparison['paragraph']}\n"
-            subq_data["comparison_text"] = comparison.get("paragraph", "")
+            output += f"{comparison_text}\n"
+            subq_data["comparison_text"] = comparison_text
 
             output += "\n🧩 Final Synthesis\n"
             sub_conclusion = self._build_subquestion_conclusion(sub_q, units)
@@ -1393,7 +1787,9 @@ class AnswerGenerator:
         return output
     
     # Minimum chunks each sub-question should receive
-    MIN_CHUNKS_PER_SUBQ = 0
+    MIN_CHUNKS_PER_SUBQ = 4
+    # Minimum paper diversity each sub-question should receive
+    MIN_PAPERS_PER_SUBQ = 2
     # A chunk is multi-assigned to another sub-question only if its score
     # is within this fraction of the best score.  0.80 = must be within 20 %.
     MULTI_ASSIGN_RATIO = 0.80
@@ -1406,21 +1802,17 @@ class AnswerGenerator:
     def _assign_chunks_to_subquestions(
         self, 
         sub_questions: List[str], 
-        chunks: List[Dict[str, Any]]
+        chunks: List[Dict[str, Any]],
+        adaptive_round: int = 0,
+        subquestion_intents: Optional[Dict[str, str]] = None,
     ) -> Dict[str, List[Dict[str, Any]]]:
         """
-        Assign chunks to sub-questions using embedding similarity.
+    Coverage-first assignment with soft penalties and broad utilization.
 
-        Strategy
-        --------
-        1.  Compute cosine similarity of every chunk against every sub-question.
-        2.  Primary assignment: each chunk goes to its SINGLE best sub-question
-            (exclusive — promotes diversity across sub-questions).
-        3.  Multi-assignment: a chunk is also assigned to another sub-question
-            only if its score is within MULTI_ASSIGN_RATIO of the best AND the
-            target sub-question has fewer than MAX_CHUNKS_PER_SUBQ chunks.
-        4.  Guarantee: if any sub-question has < MIN_CHUNKS_PER_SUBQ, backfill
-            with unassigned or least-used chunks.
+    Rules:
+    - final_score = 0.4*rrf + 0.3*subquery_similarity + 0.2*evidence + 0.1*keyword_overlap
+    - low similarity is penalized (not hard-dropped)
+    - maintain broad candidate pools per sub-question for fallback stages
 
         Args:
             sub_questions: List of sub-questions
@@ -1434,6 +1826,10 @@ class AnswerGenerator:
         assignments: Dict[str, List[Dict[str, Any]]] = {sq: [] for sq in sub_questions}
         # Track chunk_ids per sub-question to prevent duplicates
         assigned_ids: Dict[str, set] = {sq: set() for sq in sub_questions}
+        resolved_intents = {
+            sq: self._infer_intent(sq, (subquestion_intents or {}).get(sq, ""))
+            for sq in sub_questions
+        }
 
         if not sub_questions or not chunks:
             return assignments
@@ -1450,7 +1846,7 @@ class AnswerGenerator:
 
         embedder = get_shared_embedder()
 
-        # ── 1. Build expanded query forms + embeddings ──────────
+    # ── 1. Build expanded query forms + embeddings ──────────
         subq_forms: Dict[str, List[str]] = {
             sq: self._expand_query_forms(sq)
             for sq in sub_questions
@@ -1478,48 +1874,77 @@ class AnswerGenerator:
                 row.append(max_score)
             score_matrix.append(row)
 
-        # ── 2. Chunk mapping: primary + matched_sub_questions ───
-        min_threshold = self.SUBQUERY_MATCH_THRESHOLD
+        # ── 2. Chunk mapping: broad per-subquestion candidate pools ──
+        min_threshold = 0.60 if adaptive_round == 0 else 0.45
+        per_subq_cap = max(self.MAX_CHUNKS_PER_SUBQ * (2 if adaptive_round else 1), self.MIN_CHUNKS_PER_SUBQ)
 
         for i, chunk in enumerate(chunks):
             if not chunk.get("text"):
                 continue
             cid = chunk.get("chunk_id", id(chunk))
-
             scores = score_matrix[i]
-            best_j = int(np.argmax(scores))
-            best_score = scores[best_j]
+            rrf = float(chunk.get("rrf_score", 0.0) or 0.0)
+            evidence_score = float(chunk.get("evidence_score", 0.0) or 0.0)
+            text = chunk.get("text", "")
 
-            matched = [
-                {"subq": sub_questions[j], "score": float(sc)}
-                for j, sc in enumerate(scores)
-                if float(sc) >= min_threshold
-            ]
-            matched.sort(key=lambda x: x["score"], reverse=True)
+            for j, sq in enumerate(sub_questions):
+                sub_sim = float(scores[j])
+                kw_overlap = self._keyword_overlap(sq, text)
+                intent = resolved_intents.get(sq, "methodology")
 
-            primary_subq = sub_questions[best_j]
-            subq_scores = {sub_questions[j]: float(sc) for j, sc in enumerate(scores)}
-            base_chunk = {
-                **chunk,
-                "primary_subq": primary_subq,
-                "matched_sub_questions": matched,
-                "subq_scores": subq_scores,
-            }
-
-            # Ensure at least one assignment (primary), but allow multi-assignment.
-            target_subqs = [m["subq"] for m in matched] if matched else [primary_subq]
-            for sq in target_subqs:
-                sc = float(subq_scores.get(sq, best_score))
-                if len(assignments[sq]) >= self.MAX_CHUNKS_PER_SUBQ:
+                aligned = self._chunk_matches_intent(text, intent)
+                if not aligned and intent == "methodology":
+                    aligned = self._lexical_similarity(sq, text) >= 0.03
+                if not aligned:
                     continue
+
+                penalty = 0.0
+                if sub_sim < min_threshold:
+                    penalty += (min_threshold - sub_sim) * 0.25
+
+                if self._is_dataset_subquestion(sq):
+                    ds_signal = self._dataset_signal_score(text)
+                    if ds_signal <= 0:
+                        penalty += 0.20
+                    else:
+                        sub_sim = min(1.0, sub_sim + 0.10 * ds_signal)
+
+                final_score = (
+                    (0.4 * rrf)
+                    + (0.3 * sub_sim)
+                    + (0.2 * evidence_score)
+                    + (0.1 * kw_overlap)
+                    - penalty
+                )
+
+                if len(assignments[sq]) >= per_subq_cap:
+                    weakest_idx = min(
+                        range(len(assignments[sq])),
+                        key=lambda idx: float(assignments[sq][idx].get("final_score", 0.0) or 0.0),
+                    )
+                    if final_score <= float(assignments[sq][weakest_idx].get("final_score", 0.0) or 0.0):
+                        continue
+                    old_cid = str(assignments[sq][weakest_idx].get("chunk_id", ""))
+                    if old_cid in assigned_ids[sq]:
+                        assigned_ids[sq].remove(old_cid)
+                    assignments[sq].pop(weakest_idx)
+
                 if cid in assigned_ids[sq]:
                     continue
                 assignments[sq].append({
-                    **base_chunk,
-                    "subquery_similarity": sc,
+                    **chunk,
+                    "primary_subq": sq,
                     "sub_question": sq,
+                    "intent": intent,
+                    "subquery_similarity": sub_sim,
+                    "keyword_overlap": kw_overlap,
+                    "penalty": penalty,
+                    "final_score": final_score,
                 })
                 assigned_ids[sq].add(cid)
+
+        for sq in sub_questions:
+            assignments[sq].sort(key=lambda x: float(x.get("final_score", 0.0) or 0.0), reverse=True)
 
         # ── 3. Optional back-fill guarantee ──────────────────────
         if self.MIN_CHUNKS_PER_SUBQ <= 0:
@@ -1537,11 +1962,29 @@ class AnswerGenerator:
             for idx in ranked:
                 if len(assignments[sq]) >= self.MIN_CHUNKS_PER_SUBQ:
                     break
-                if score_matrix[idx][j] < min_threshold:
+                intent = resolved_intents.get(sq, "methodology")
+                text = chunks[idx].get("text", "")
+                aligned = self._chunk_matches_intent(text, intent)
+                if not aligned and intent == "methodology":
+                    aligned = self._lexical_similarity(sq, text) >= 0.03
+                if not aligned:
                     continue
                 cid = chunks[idx].get("chunk_id", id(chunks[idx]))
                 if cid not in assigned_ids[sq]:
-                    assignments[sq].append({**chunks[idx], "subquery_similarity": score_matrix[idx][j]})
+                    assignments[sq].append({
+                        **chunks[idx],
+                        "intent": intent,
+                        "subquery_similarity": float(score_matrix[idx][j]),
+                        "keyword_overlap": self._keyword_overlap(sq, chunks[idx].get("text", "")),
+                        "final_score": (
+                            (0.4 * float(chunks[idx].get("rrf_score", 0.0) or 0.0))
+                            + (0.3 * float(score_matrix[idx][j]))
+                            + (0.2 * float(chunks[idx].get("evidence_score", 0.0) or 0.0))
+                            + (0.1 * self._keyword_overlap(sq, chunks[idx].get("text", "")))
+                            - (0.20 * max(0.0, min_threshold - float(score_matrix[idx][j])))
+                        ),
+                        "sub_question": sq,
+                    })
                     assigned_ids[sq].add(cid)
 
         return assignments

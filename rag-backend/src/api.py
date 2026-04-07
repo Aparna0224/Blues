@@ -30,11 +30,57 @@ from src.database import get_mongo_client
 
 # ─── App ─────────────────────────────────────────────────────────
 
+from contextlib import asynccontextmanager
+
+_faiss_store = None  # singleton, populated at startup
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup: preload FAISS + BM25 indexes so first query is fast."""
+    global _faiss_store
+    print("🚀 Blues RAG API starting — preloading indexes...")
+
+    # 1. MongoDB connection
+    try:
+        mongo = get_mongo_client()
+        mongo.connect()
+        print("   ✓ MongoDB connected")
+    except Exception as e:
+        print(f"   ✗ MongoDB connection failed: {e}")
+
+    # 2. FAISS index
+    try:
+        from src.vector_store import FAISSVectorStore
+        _faiss_store = FAISSVectorStore()
+        size = _faiss_store.get_index_size()
+        print(f"   ✓ FAISS index loaded ({size} vectors)")
+    except Exception as e:
+        print(f"   ✗ FAISS load failed: {e}")
+
+    # 3. BM25 index (can be slow with large chunk counts)
+    try:
+        from src.retrieval.bm25_index import get_bm25_index
+        bm25 = get_bm25_index()
+        if not bm25._is_built:
+            print("   ⏳ Building BM25 index from MongoDB (this may take a moment)...")
+            bm25.build_from_mongo()
+        doc_count = len(bm25._chunks) if bm25._chunks else 0
+        print(f"   ✓ BM25 index ready ({doc_count} documents)")
+    except Exception as e:
+        print(f"   ✗ BM25 load failed (non-fatal, will build on first query): {e}")
+
+    print("🚀 Startup complete.")
+    yield
+    print("👋 Blues RAG API shutting down.")
+
+
 app = FastAPI(
     title=Config.API_TITLE,
     version=Config.API_VERSION,
     docs_url="/docs",
     redoc_url="/redoc",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -715,10 +761,11 @@ async def get_status():
         mongodb_status = "disconnected"
 
     try:
-        from src.vector_store import FAISSVectorStore
-
-        vs = FAISSVectorStore()
-        faiss_vectors = vs.get_index_size()
+        if _faiss_store:
+            faiss_vectors = _faiss_store.get_index_size()
+        else:
+            from src.vector_store import FAISSVectorStore
+            faiss_vectors = FAISSVectorStore().get_index_size()
     except Exception:
         faiss_vectors = 0
 

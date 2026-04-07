@@ -16,10 +16,11 @@ class MongoDBClient:
         return cls._instance
     
     def __init__(self):
-        if not hasattr(self, 'initialized'):
+        if not hasattr(self, '_fully_initialized'):
             self.client = None
             self.db = None
             self.initialized = False
+            self._fully_initialized = True  # guard prevents re-init on second call
     
     def connect(self):
         """Connect to MongoDB and initialize collections."""
