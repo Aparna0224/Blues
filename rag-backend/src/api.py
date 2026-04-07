@@ -73,12 +73,21 @@ class QueryRequest(BaseModel):
     query: str = Field(..., min_length=3, description="Research question")
     num_documents: int = Field(default=15, ge=1, le=50, description="Number of documents to retrieve")
     mode: str = Field(default="dynamic", pattern="^(dynamic|cached)$", description="Retrieval mode")
+    paper_source: str = Field(
+        default=Config.DEFAULT_PAPER_SOURCE,
+        pattern="^(openalex|semantic_scholar|arxiv|both|all)$",
+        description="Paper source for dynamic retrieval",
+    )
     include_summary: bool = Field(default=True, description="Include LLM summary (Stage 5)")
     user_level: Optional[str] = Field(default="auto", description="User level for API request")
+    user_id: str = Field(default="local_user", description="User identity for persistent workspace storage")
+    project_id: Optional[str] = Field(default=None, description="Optional project id for storing query history")
     filters: Optional[dict] = Field(default=None, description="Optional metadata filters for retrieval")
 
 
 class QueryResponse(BaseModel):
+    query_id: Optional[str] = None
+    project_id: Optional[str] = None
     execution_id: str
     query: str
     mode: str
@@ -122,6 +131,51 @@ class UploadResponse(BaseModel):
     vectors_added: int
 
 
+class ProjectCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    description: Optional[str] = Field(default="")
+    user_id: str = Field(default="local_user")
+
+
+class ProjectResponse(BaseModel):
+    project_id: str
+    user_id: str
+    name: str
+    description: str
+    is_archived: bool
+    created_at: str
+    updated_at: str
+
+
+class ProjectUpdateRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    description: Optional[str] = Field(default=None, max_length=2000)
+
+
+class HardDeleteProjectResponse(BaseModel):
+    status: str
+    project_id: str
+    project_deleted: int
+    queries_deleted: int
+    query_results_deleted: int
+    traces_deleted: int
+
+
+class QueryHistoryItem(BaseModel):
+    query_id: str
+    project_id: str
+    user_id: str
+    query_text: str
+    mode: str
+    paper_source: str
+    user_level: str
+    status: str
+    execution_id: str
+    chunks_used: int
+    papers_found: int
+    created_at: str
+
+
 # ─── POST /api/query ─────────────────────────────────────────────
 
 @app.post("/api/query", response_model=QueryResponse)
@@ -149,6 +203,17 @@ async def run_query(req: QueryRequest):
         mongo.connect()
     except Exception as e:
         raise HTTPException(status_code=503, detail=f"MongoDB unavailable: {e}")
+
+    user_id = (req.user_id or "local_user").strip() or "local_user"
+    selected_project = None
+    if req.project_id:
+        selected_project = mongo.get_projects_collection().find_one(
+            {"project_id": req.project_id, "user_id": user_id, "is_archived": {"$ne": True}},
+            {"_id": 0},
+        )
+    if not selected_project:
+        selected_project = mongo.ensure_default_project(user_id=user_id)
+    project_id = selected_project.get("project_id")
 
     # ── Step 1: LLM + Planner ────────────────────────────────────
     try:
@@ -188,7 +253,11 @@ async def run_query(req: QueryRequest):
         if mode == "dynamic":
             from src.retrieval.dynamic_retriever import DynamicRetriever
 
-            dynamic_retriever = DynamicRetriever(use_evidence=True, papers_per_query=5)
+            dynamic_retriever = DynamicRetriever(
+                use_evidence=True,
+                papers_per_query=5,
+                source=req.paper_source,
+            )
             chunks = dynamic_retriever.dynamic_retrieve(
                 search_queries=search_queries,
                 main_query=req.query,
@@ -385,7 +454,11 @@ async def run_query(req: QueryRequest):
 
     total_ms = round((_time.perf_counter() - t_start) * 1000, 1)
 
-    return QueryResponse(
+    query_id = f"qry_{uuid.uuid4().hex[:16]}"
+
+    response_payload = QueryResponse(
+        query_id=query_id,
+        project_id=project_id,
         execution_id=execution_id,
         query=req.query,
         mode=mode,
@@ -404,6 +477,61 @@ async def run_query(req: QueryRequest):
         total_time_ms=total_ms,
         warnings=warnings,
     )
+
+    # Persist query + full result for project history / reopen workflow
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        query_doc = {
+            "query_id": query_id,
+            "project_id": project_id,
+            "user_id": user_id,
+            "query_text": req.query,
+            "mode": mode,
+            "paper_source": req.paper_source,
+            "user_level": req.user_level or "auto",
+            "status": "completed",
+            "execution_id": execution_id,
+            "chunks_used": len(chunks),
+            "papers_found": len(papers_found),
+            "created_at": now,
+            "updated_at": now,
+        }
+        result_doc = {
+            "query_id": query_id,
+            "execution_id": execution_id,
+            "project_id": project_id,
+            "user_id": user_id,
+            "result_payload": response_payload.model_dump(),
+            "retrieval_stats": {
+                "chunks_used": len(chunks),
+                "papers_found": len(papers_found),
+                "sub_questions": len(sub_questions),
+            },
+            "quality_flags": {
+                "warnings": warnings,
+                "verification_confidence": verification_result.get("confidence_score") if verification_result else None,
+            },
+            "created_at": now,
+            "updated_at": now,
+        }
+        mongo.store_query_run(query_doc=query_doc, result_doc=result_doc)
+
+        mongo.get_projects_collection().update_one(
+            {"project_id": project_id},
+            {"$set": {"updated_at": now}},
+        )
+    except Exception as e:
+        # Non-fatal: query completed successfully even if persistence fails
+        response_payload.warnings.append(f"Workspace persistence failed: {e}")
+
+    return response_payload
+
+
+@app.post("/api/projects/{project_id}/queries", response_model=QueryResponse)
+async def run_project_query(project_id: str, req: QueryRequest):
+    """Run query scoped to a project and persist under that project id."""
+    scoped_req = req.model_copy(update={"project_id": project_id})
+    return await run_query(scoped_req)
 
 
 @app.get("/api/download-report")
@@ -627,3 +755,219 @@ async def get_trace(execution_id: str):
     if not trace:
         raise HTTPException(status_code=404, detail="Trace not found")
     return trace
+
+
+# ─── Workspace Persistence Endpoints ────────────────────────────
+
+@app.post("/api/projects", response_model=ProjectResponse)
+async def create_project(req: ProjectCreateRequest):
+    """Create a persistent project for query history and reopen flows."""
+    try:
+        mongo = get_mongo_client()
+        mongo.connect()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"MongoDB unavailable: {e}")
+
+    now = datetime.now(timezone.utc).isoformat()
+    project = {
+        "project_id": f"proj_{uuid.uuid4().hex[:12]}",
+        "user_id": req.user_id,
+        "name": req.name.strip(),
+        "description": (req.description or "").strip(),
+        "is_archived": False,
+        "created_at": now,
+        "updated_at": now,
+    }
+    mongo.get_projects_collection().insert_one(project)
+    return ProjectResponse(**project)
+
+
+@app.get("/api/projects", response_model=list[ProjectResponse])
+async def list_projects(
+    user_id: str = Query(default="local_user"),
+    include_archived: bool = Query(default=False),
+):
+    """List projects for a given user."""
+    try:
+        mongo = get_mongo_client()
+        mongo.connect()
+        projects = mongo.list_projects(user_id=user_id, include_archived=include_archived)
+        if not projects and not include_archived:
+            projects = [mongo.ensure_default_project(user_id=user_id)]
+        return [ProjectResponse(**p) for p in projects]
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"MongoDB unavailable: {e}")
+
+
+@app.get("/api/projects/{project_id}", response_model=ProjectResponse)
+async def get_project(project_id: str):
+    """Get a single project by id."""
+    try:
+        mongo = get_mongo_client()
+        mongo.connect()
+        project = mongo.get_projects_collection().find_one({"project_id": project_id, "is_archived": {"$ne": True}}, {"_id": 0})
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        return ProjectResponse(**project)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"MongoDB unavailable: {e}")
+
+
+@app.patch("/api/projects/{project_id}", response_model=ProjectResponse)
+async def update_project(project_id: str, req: ProjectUpdateRequest, user_id: str = Query(default="local_user")):
+    """Update a project's mutable fields (name/description)."""
+    if req.name is None and req.description is None:
+        raise HTTPException(status_code=400, detail="At least one field is required: name or description")
+
+    try:
+        mongo = get_mongo_client()
+        mongo.connect()
+        updated = mongo.update_project(
+            project_id,
+            user_id=user_id,
+            name=req.name.strip() if req.name is not None else None,
+            description=req.description.strip() if req.description is not None else None,
+        )
+        if not updated:
+            raise HTTPException(status_code=404, detail="Project not found")
+        return ProjectResponse(**updated)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"MongoDB unavailable: {e}")
+
+
+@app.delete("/api/projects/{project_id}")
+async def archive_project(project_id: str, user_id: str = Query(default="local_user")):
+    """Archive a project (soft delete) while preserving its historical records."""
+    try:
+        mongo = get_mongo_client()
+        mongo.connect()
+        archived = mongo.archive_project(project_id, user_id=user_id)
+        if not archived:
+            raise HTTPException(status_code=404, detail="Project not found")
+        mongo.ensure_default_project(user_id=user_id)
+        return {"status": "archived", "project_id": project_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"MongoDB unavailable: {e}")
+
+
+@app.post("/api/projects/{project_id}/restore", response_model=ProjectResponse)
+async def restore_project(project_id: str, user_id: str = Query(default="local_user")):
+    """Restore a previously archived project."""
+    try:
+        mongo = get_mongo_client()
+        mongo.connect()
+        restored = mongo.restore_project(project_id, user_id=user_id)
+        if not restored:
+            raise HTTPException(status_code=404, detail="Archived project not found")
+        project = mongo.get_projects_collection().find_one(
+            {"project_id": project_id, "user_id": user_id, "is_archived": {"$ne": True}},
+            {"_id": 0},
+        )
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found after restore")
+        return ProjectResponse(**project)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"MongoDB unavailable: {e}")
+
+
+@app.delete("/api/projects/{project_id}/hard", response_model=HardDeleteProjectResponse)
+async def hard_delete_project(
+    project_id: str,
+    user_id: str = Query(default="local_user"),
+    confirm: bool = Query(default=False),
+):
+    """Permanently delete a project and all persisted records tied to it."""
+    if not confirm:
+        raise HTTPException(status_code=400, detail="Hard delete requires confirm=true")
+
+    try:
+        mongo = get_mongo_client()
+        mongo.connect()
+        deleted = mongo.hard_delete_project(project_id, user_id=user_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Project not found")
+
+        mongo.ensure_default_project(user_id=user_id)
+
+        return HardDeleteProjectResponse(
+            status="hard_deleted",
+            project_id=project_id,
+            project_deleted=deleted["project_deleted"],
+            queries_deleted=deleted["queries_deleted"],
+            query_results_deleted=deleted["query_results_deleted"],
+            traces_deleted=deleted["traces_deleted"],
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"MongoDB unavailable: {e}")
+
+
+@app.get("/api/projects/{project_id}/queries", response_model=list[QueryHistoryItem])
+async def list_project_queries(project_id: str):
+    """List queries for a project (history panel)."""
+    try:
+        mongo = get_mongo_client()
+        mongo.connect()
+        items = mongo.list_project_queries(project_id)
+        return [QueryHistoryItem(**item) for item in items]
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"MongoDB unavailable: {e}")
+
+
+@app.get("/api/queries/{query_id}")
+async def get_query(query_id: str):
+    """Retrieve query metadata by query id."""
+    try:
+        mongo = get_mongo_client()
+        mongo.connect()
+        item = mongo.get_queries_collection().find_one({"query_id": query_id}, {"_id": 0})
+        if not item:
+            raise HTTPException(status_code=404, detail="Query not found")
+        return item
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"MongoDB unavailable: {e}")
+
+
+@app.get("/api/queries/{query_id}/result", response_model=QueryResponse)
+async def get_query_result(query_id: str):
+    """Retrieve full persisted output for a stored query id."""
+    try:
+        mongo = get_mongo_client()
+        mongo.connect()
+        result = mongo.get_query_result(query_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="Query result not found")
+        payload = result.get("result_payload") or {}
+        return QueryResponse(**payload)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"MongoDB unavailable: {e}")
+
+
+@app.get("/api/executions/{execution_id}/result", response_model=QueryResponse)
+async def get_execution_result(execution_id: str):
+    """Retrieve full persisted output by execution id."""
+    try:
+        mongo = get_mongo_client()
+        mongo.connect()
+        result = mongo.get_query_result_by_execution(execution_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="Execution result not found")
+        payload = result.get("result_payload") or {}
+        return QueryResponse(**payload)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"MongoDB unavailable: {e}")

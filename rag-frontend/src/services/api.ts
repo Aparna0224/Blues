@@ -4,6 +4,11 @@ import type {
   QueryResponse,
   UploadResponse,
   StatusResponse,
+  ProjectRecord,
+  ProjectCreateRequest,
+  ProjectUpdateRequest,
+  HardDeleteProjectResponse,
+  QueryHistoryItem,
 } from '../types';
 
 interface DownloadReportOptions {
@@ -81,6 +86,54 @@ export async function getStatus(): Promise<StatusResponse> {
 /** Retrieve execution trace by ID */
 export async function getTrace(executionId: string): Promise<unknown> {
   const { data } = await client.get(`/traces/${executionId}`);
+  return data;
+}
+
+export async function createProject(payload: ProjectCreateRequest): Promise<ProjectRecord> {
+  const { data } = await client.post<ProjectRecord>('/projects', payload);
+  return data;
+}
+
+export async function listProjects(userId = 'local_user', includeArchived = false): Promise<ProjectRecord[]> {
+  const { data } = await client.get<ProjectRecord[]>('/projects', {
+    params: { user_id: userId, include_archived: includeArchived },
+  });
+  return data;
+}
+
+export async function updateProject(projectId: string, payload: ProjectUpdateRequest, userId = 'local_user'): Promise<ProjectRecord> {
+  const { data } = await client.patch<ProjectRecord>(`/projects/${projectId}`, payload, {
+    params: { user_id: userId },
+  });
+  return data;
+}
+
+export async function hardDeleteProject(projectId: string, userId = 'local_user'): Promise<HardDeleteProjectResponse> {
+  const { data } = await client.delete<HardDeleteProjectResponse>(`/projects/${projectId}/hard`, {
+    params: { user_id: userId, confirm: true },
+  });
+  return data;
+}
+
+export async function restoreProject(projectId: string, userId = 'local_user'): Promise<ProjectRecord> {
+  const { data } = await client.post<ProjectRecord>(`/projects/${projectId}/restore`, undefined, {
+    params: { user_id: userId },
+  });
+  return data;
+}
+
+export async function listProjectQueries(projectId: string): Promise<QueryHistoryItem[]> {
+  const { data } = await client.get<QueryHistoryItem[]>(`/projects/${projectId}/queries`);
+  return data;
+}
+
+export async function getQueryResult(queryId: string): Promise<QueryResponse> {
+  const { data } = await client.get<QueryResponse>(`/queries/${queryId}/result`);
+  return data;
+}
+
+export async function getExecutionResult(executionId: string): Promise<QueryResponse> {
+  const { data } = await client.get<QueryResponse>(`/executions/${executionId}/result`);
   return data;
 }
 

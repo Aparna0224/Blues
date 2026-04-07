@@ -183,24 +183,6 @@ body {
   animation-delay: 0s;
 }
 
-/* Neural map heatmap */
-@keyframes heatmap-pulse {
-
-  0%,
-  100% {
-    opacity: 0.6;
-  }
-
-  50% {
-    opacity: 1;
-  }
-}
-
-.heatmap-cell {
-  border-radius: 3px;
-  animation: heatmap-pulse 2s ease-in-out infinite;
-}
-
 /* Glow ring for active nav */
 .nav-active-glow {
   box-shadow: 0 0 0 1px rgba(94, 234, 212, 0.3), 0 2px 8px rgba(94, 234, 212, 0.1);

@@ -29,17 +29,18 @@ class DynamicRetriever:
     # Minimum cosine similarity between abstract embedding and query
     ABSTRACT_RELEVANCE_THRESHOLD = Config.DYNAMIC_ABSTRACT_MIN_SIMILARITY
     
-    def __init__(self, use_evidence: bool = True, papers_per_query: int = 5):
+    def __init__(self, use_evidence: bool = True, papers_per_query: int = 5, source: str | None = None):
         """
         Initialize DynamicRetriever.
         
         Args:
             use_evidence: Enable sentence-level evidence extraction
             papers_per_query: Number of papers to fetch per search query
+            source: Paper source (openalex, semantic_scholar, arxiv, both, all)
         """
         self.embedder = get_shared_embedder()
         self.mongo = get_mongo_client()
-        self.ingestor = PaperIngestor(source="openalex")
+        self.ingestor = PaperIngestor(source=source or Config.DEFAULT_PAPER_SOURCE)
         self.fulltext_fetcher = FullTextFetcher()
         self.chunker = TextChunker()
         self.use_evidence = use_evidence

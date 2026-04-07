@@ -12,7 +12,7 @@ class AnswerGenerator:
 
     SECTION_MAP = {
         "introduction": ["introduction", "background", "abstract"],
-        "methodology": ["method", "methods", "methodology", "approach", "body"],
+        "methodology": ["method", "methods", "methodology", "approach"],
         "results": ["results", "experiments", "evaluation", "findings"],
         "discussion": ["discussion", "analysis"],
         "conclusion": ["conclusion"],
@@ -244,13 +244,14 @@ class AnswerGenerator:
     @staticmethod
     def _section_preferences(sub_question: str) -> set[str]:
         sq = (sub_question or "").lower()
-        if any(k in sq for k in ["method", "approach", "how"]):
-            return {"Methodology", "Introduction"}
+        base = {"Results", "Discussion"}
+        if any(k in sq for k in ["method", "approach", "how", "technique"]):
+            return base | {"Methodology", "Introduction"}
         if any(k in sq for k in ["result", "performance", "effective", "accuracy"]):
-            return {"Results", "Discussion"}
+            return base | {"Methodology", "Conclusion"}
         if any(k in sq for k in ["challenge", "limitation", "risk", "issue"]):
-            return {"Discussion", "Conclusion"}
-        return {"Introduction", "Methodology", "Results", "Discussion", "Conclusion", "unknown"}
+            return base | {"Conclusion"}
+        return {"Introduction", "Methodology", "Results", "Discussion", "Conclusion", "Related_work", "unknown"}
 
     @staticmethod
     def _normalize_section(section: str) -> str:
@@ -274,50 +275,48 @@ class AnswerGenerator:
     ]
 
     def _infer_section_from_content(self, text: str, labeled_section: str) -> str:
-        """Infer TRUE section using headers + linguistic cues."""
+        """Infer TRUE section using explicit headers first, then strong cues."""
         if not text:
             return self._normalize_section(labeled_section)
-        
+
         text_lower = text.lower()
-        
-        # Check for explicit section headers in text
-        if any(h in text_lower for h in ["introduction", "background", "motivation"]):
+
+        # Priority 1: explicit markdown/style headers
+        if re.search(r"(^|\n)\s{0,3}(#\s*|##\s*|\d+\.?\s+)?introduction\b", text_lower):
             return "Introduction"
-        if any(h in text_lower for h in ["methodology", "method", "approach", "system design", "experimental setup"]):
+        if re.search(r"(^|\n)\s{0,3}(#\s*|##\s*|\d+\.?\s+)?(method|methods|methodology|approach|implementation)\b", text_lower):
             return "Methodology"
-        if any(h in text_lower for h in ["dataset", "data collection", "data source"]):
-            return "Methodology"
-        if any(h in text_lower for h in ["results", "evaluation", "experiment", "performance", "findings"]):
+        if re.search(r"(^|\n)\s{0,3}(#\s*|##\s*|\d+\.?\s+)?(results|evaluation|experiments?|findings?)\b", text_lower):
             return "Results"
-        if any(h in text_lower for h in ["discussion", "analysis"]):
+        if re.search(r"(^|\n)\s{0,3}(#\s*|##\s*|\d+\.?\s+)?(discussion|analysis|limitations?)\b", text_lower):
             return "Discussion"
-        if any(h in text_lower for h in ["conclusion", "future work"]):
+        if re.search(r"(^|\n)\s{0,3}(#\s*|##\s*|\d+\.?\s+)?(conclusion|future work|summary)\b", text_lower):
             return "Conclusion"
-        
-        # Linguistic cues for methodology
-        methodology_cues = [
-            "we propose", "our approach", "our method", "algorithm", "procedure",
-            "step-by-step", "pipeline", "architecture", "framework", "constructed"
-        ]
-        if any(cue in text_lower for cue in methodology_cues):
-            return "Methodology"
-        
-        # Linguistic cues for results
+
+        # Priority 2: strong results cues (more specific than weak methodology words)
         results_cues = [
-            "accuracy of", "achieved", "performance", "evaluation", "benchmark",
-            "compared to", "metric", "score", "result shows", "experimental result"
+            "accuracy", "precision", "recall", "f1", "benchmark", "outperform", "state-of-the-art",
+            "experimental results", "evaluation results", "performance on"
         ]
         if any(cue in text_lower for cue in results_cues):
             return "Results"
-        
-        # Linguistic cues for introduction
+
+        # Priority 3: strong introduction cues
         intro_cues = [
-            "problem", "motivation", "important", "challenge", "why", "background"
+            "problem statement", "research question", "motivation", "this paper addresses", "background"
         ]
         if any(cue in text_lower for cue in intro_cues):
             return "Introduction"
-        
-        # Fallback to labeled section
+
+        # Priority 4: strong methodology cues
+        methodology_cues = [
+            "algorithm", "pseudo-code", "training process", "hyperparameter", "implementation details",
+            "network architecture", "loss function", "gradient"
+        ]
+        if any(cue in text_lower for cue in methodology_cues):
+            return "Methodology"
+
+        # Priority 5: trust labeled metadata section
         return self._normalize_section(labeled_section)
 
     def _resolve_true_section(self, chunk: Dict[str, Any]) -> tuple[str, bool]:
@@ -344,7 +343,9 @@ class AnswerGenerator:
         return any(k in sq for k in methodology_keywords)
 
     def _section_allowed_for_subquestion(self, section: str, subq: str) -> bool:
-        """Strict section gating: methodology sub-questions only accept methodology sections."""
+        """Balanced section gating: always allow outcome sections."""
+        if (section or "").lower() in {"results", "discussion", "conclusion"}:
+            return True
         if not self._is_methodology_subquestion(subq):
             # Non-methodology sub-questions accept any section
             return True

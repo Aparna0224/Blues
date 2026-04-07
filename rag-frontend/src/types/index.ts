@@ -4,8 +4,11 @@ export interface QueryRequest {
   query: string;
   num_documents: number;
   mode: 'dynamic' | 'cached';
+  paper_source?: 'openalex' | 'semantic_scholar' | 'arxiv' | 'both' | 'all';
   include_summary: boolean;
   user_level?: 'auto' | 'beginner' | 'intermediate' | 'advanced';
+  user_id?: string;
+  project_id?: string;
   filters?: QueryFilters | null;
 }
 
@@ -16,6 +19,51 @@ export interface QueryFilters {
   year?: { min?: number; max?: number };
   title_contains?: string;
   source?: string;
+}
+
+export interface ProjectRecord {
+  project_id: string;
+  user_id: string;
+  name: string;
+  description: string;
+  is_archived: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectCreateRequest {
+  name: string;
+  description?: string;
+  user_id?: string;
+}
+
+export interface ProjectUpdateRequest {
+  name?: string;
+  description?: string;
+}
+
+export interface HardDeleteProjectResponse {
+  status: string;
+  project_id: string;
+  project_deleted: number;
+  queries_deleted: number;
+  query_results_deleted: number;
+  traces_deleted: number;
+}
+
+export interface QueryHistoryItem {
+  query_id: string;
+  project_id: string;
+  user_id: string;
+  query_text: string;
+  mode: string;
+  paper_source: string;
+  user_level: string;
+  status: string;
+  execution_id: string;
+  chunks_used: number;
+  papers_found: number;
+  created_at: string;
 }
 
 export interface PaperInfo {
@@ -59,6 +107,8 @@ export interface PlanningInfo {
 }
 
 export interface QueryResponse {
+  query_id?: string;
+  project_id?: string;
   execution_id: string;
   query: string;
   mode: string;

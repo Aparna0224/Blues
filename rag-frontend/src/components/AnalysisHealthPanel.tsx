@@ -7,47 +7,6 @@ interface Props {
     showSummary?: boolean;
 }
 
-// Generate a deterministic-ish heatmap grid from the paper data
-function HeatmapGrid({ seed }: { seed: number }) {
-    const rows = 7;
-    const cols = 9;
-    const intensities = Array.from({ length: rows * cols }, (_, i) => {
-        const v = Math.abs(Math.sin(seed * 0.7 + i * 1.3)) * 0.85 + 0.15;
-        return v;
-    });
-
-    const getColor = (v: number) => {
-        if (v > 0.8) return '#5eead4';
-        if (v > 0.6) return '#2dd4bf';
-        if (v > 0.4) return '#0891b2';
-        if (v > 0.2) return '#1e3a5f';
-        return '#1a2744';
-    };
-
-    return (
-        <div
-            style={{
-                display: 'grid',
-                gridTemplateColumns: `repeat(${cols}, 1fr)`,
-                gap: '3px',
-            }}
-        >
-            {intensities.map((v, i) => (
-                <div
-                    key={i}
-                    className="heatmap-cell"
-                    style={{
-                        height: '14px',
-                        background: getColor(v),
-                        animationDelay: `${(i * 0.05) % 2}s`,
-                        opacity: v,
-                    }}
-                />
-            ))}
-        </div>
-    );
-}
-
 export default function AnalysisHealthPanel({ result, showSummary = true }: Props) {
     const [summaryOpen, setSummaryOpen] = useState(false);
 
@@ -55,7 +14,6 @@ export default function AnalysisHealthPanel({ result, showSummary = true }: Prop
     const trustScore = result.verification?.confidence_score;
     const trustPct = trustScore != null ? (trustScore * 100).toFixed(0) : null;
     const trustColor = trustScore == null ? '#94a3b8' : trustScore >= 0.75 ? '#34d399' : trustScore >= 0.5 ? '#fbbf24' : '#f87171';
-    const heatSeed = result.chunks_used + papersCount;
 
     return (
         <div className="animate-slide-right space-y-4">
@@ -118,22 +76,6 @@ export default function AnalysisHealthPanel({ result, showSummary = true }: Prop
                         <span className="text-[10px]" style={{ color: 'var(--text-muted)' }}>Evidence chunks</span>
                         <span className="text-xs font-semibold" style={{ color: 'var(--text-secondary)' }}>{result.chunks_used}</span>
                     </div>
-                </div>
-            </div>
-
-            {/* ── Logic Mapping / Neural Map ─────────────── */}
-            <div className="glass-card overflow-hidden">
-                <div className="p-4">
-                    <div className="flex items-center justify-between mb-3">
-                        <span className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
-                            Logic Mapping V2.0
-                        </span>
-                        <span className="text-[9px] px-2 py-0.5 rounded-full badge-neutral">Neural</span>
-                    </div>
-                    <HeatmapGrid seed={heatSeed} />
-                    <p className="text-[9px] mt-2 text-center" style={{ color: 'var(--text-muted)' }}>
-                        Evidence correlation matrix
-                    </p>
                 </div>
             </div>
 

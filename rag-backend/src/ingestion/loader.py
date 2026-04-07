@@ -1,22 +1,23 @@
-"""Data ingestion from OpenAlex and Semantic Scholar APIs."""
+"""Data ingestion from OpenAlex, Semantic Scholar, and arXiv APIs."""
 
 import requests
 import time
 import uuid
+import xml.etree.ElementTree as ET
 from typing import List, Dict, Any, Optional
 from src.config import Config
 from src.database import get_mongo_client
 
 
 class PaperIngestor:
-    """Ingest papers from OpenAlex or Semantic Scholar APIs."""
+    """Ingest papers from OpenAlex, Semantic Scholar, and arXiv APIs."""
     
     def __init__(self, source: str = None):
         """
         Initialize paper ingestor.
         
         Args:
-            source: API source ('openalex' or 'semantic_scholar'). 
+        source: API source ('openalex', 'semantic_scholar', 'arxiv', 'both', 'all').
                     Defaults to Config.DEFAULT_PAPER_SOURCE.
         """
         self.source = source or Config.DEFAULT_PAPER_SOURCE
@@ -31,6 +32,10 @@ class PaperIngestor:
         self.semantic_scholar_base_url = Config.SEMANTIC_SCHOLAR_BASE_URL
         self.semantic_scholar_api_key = Config.SEMANTIC_SCHOLAR_API_KEY
         self.semantic_scholar_timeout = Config.SEMANTIC_SCHOLAR_TIMEOUT
+
+        # arXiv settings
+        self.arxiv_base_url = Config.ARXIV_BASE_URL
+        self.arxiv_timeout = Config.ARXIV_TIMEOUT
     
     def fetch_papers(self, query: str, max_results: int = 10) -> List[Dict[str, Any]]:
         """
@@ -43,12 +48,37 @@ class PaperIngestor:
         Returns:
             List of normalized paper objects
         """
-        if self.source == "both":
+        source = (self.source or "").strip().lower()
+        if source == "both":
             return self._fetch_from_both(query, max_results)
-        elif self.source == "semantic_scholar":
+        elif source == "all":
+            return self._fetch_from_all(query, max_results)
+        elif source == "semantic_scholar":
             return self._fetch_from_semantic_scholar(query, max_results)
+        elif source == "arxiv":
+            return self._fetch_from_arxiv(query, max_results)
         else:
             return self._fetch_from_openalex(query, max_results)
+
+    def _fetch_from_all(self, query: str, max_results: int = 10) -> List[Dict[str, Any]]:
+        """Fetch papers from OpenAlex + Semantic Scholar + arXiv with deduplication."""
+        per_source = max(max_results // 3, 4)
+
+        print("📚 Fetching from OpenAlex + Semantic Scholar + arXiv...")
+
+        openalex_papers = self._fetch_from_openalex(query, per_source)
+        semantic_papers = self._fetch_from_semantic_scholar(query, per_source)
+        arxiv_papers = self._fetch_from_arxiv(query, per_source)
+
+        merged = self._deduplicate_papers(openalex_papers, semantic_papers)
+        merged = self._deduplicate_papers(merged, arxiv_papers)
+
+        print(
+            "✓ Combined: "
+            f"{len(merged)} unique papers "
+            f"(OpenAlex: {len(openalex_papers)}, Semantic Scholar: {len(semantic_papers)}, arXiv: {len(arxiv_papers)})"
+        )
+        return merged[:max_results]
     
     def _fetch_from_both(self, query: str, max_results: int = 10) -> List[Dict[str, Any]]:
         """
@@ -250,6 +280,44 @@ class PaperIngestor:
         
         print(f"✗ Semantic Scholar: Max retries exceeded")
         return []
+
+    def _fetch_from_arxiv(self, query: str, max_results: int = 10) -> List[Dict[str, Any]]:
+        """Fetch papers from arXiv API (Atom feed)."""
+        try:
+            params = {
+                "search_query": f"all:{query}",
+                "start": 0,
+                "max_results": min(max_results, 100),
+                "sortBy": "relevance",
+                "sortOrder": "descending",
+            }
+            headers = {"User-Agent": "RAG-Backend/0.1.0"}
+
+            response = requests.get(
+                self.arxiv_base_url,
+                params=params,
+                headers=headers,
+                timeout=self.arxiv_timeout,
+            )
+            response.raise_for_status()
+
+            root = ET.fromstring(response.text)
+            ns = {
+                "atom": "http://www.w3.org/2005/Atom",
+                "arxiv": "http://arxiv.org/schemas/atom",
+            }
+
+            papers: List[Dict[str, Any]] = []
+            for entry in root.findall("atom:entry", ns):
+                paper = self._normalize_arxiv_entry(entry, ns)
+                if paper:
+                    papers.append(paper)
+
+            print(f"✓ Fetched {len(papers)} papers from arXiv")
+            return papers
+        except Exception as e:
+            print(f"✗ Error fetching papers from arXiv: {e}")
+            return []
     
     def _normalize_openalex_paper(self, work: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Normalize OpenAlex paper data."""
@@ -393,6 +461,56 @@ class PaperIngestor:
             return paper
         except Exception as e:
             print(f"✗ Error normalizing Semantic Scholar paper: {e}")
+            return None
+
+    def _normalize_arxiv_entry(self, entry: ET.Element, ns: Dict[str, str]) -> Optional[Dict[str, Any]]:
+        """Normalize arXiv Atom entry into the common paper schema."""
+        try:
+            title = (entry.findtext("atom:title", default="", namespaces=ns) or "").strip()
+            abstract = (entry.findtext("atom:summary", default="", namespaces=ns) or "").strip()
+            if not title or not abstract:
+                return None
+
+            raw_id = (entry.findtext("atom:id", default="", namespaces=ns) or "").strip()
+            paper_id = raw_id.split("/")[-1].replace("v", "_") if raw_id else str(uuid.uuid4())
+
+            published = (entry.findtext("atom:published", default="", namespaces=ns) or "").strip()
+            year = 0
+            if len(published) >= 4 and published[:4].isdigit():
+                year = int(published[:4])
+
+            doi = (entry.findtext("arxiv:doi", default="", namespaces=ns) or "").strip()
+
+            pdf_url = ""
+            landing_url = raw_id
+            for link in entry.findall("atom:link", ns):
+                title_attr = (link.attrib.get("title") or "").lower()
+                href = link.attrib.get("href") or ""
+                typ = (link.attrib.get("type") or "").lower()
+                if title_attr == "pdf" or typ == "application/pdf":
+                    pdf_url = href
+                if link.attrib.get("rel") == "alternate" and href:
+                    landing_url = href
+
+            full_text_url = pdf_url or landing_url
+
+            return {
+                "paper_id": f"arxiv_{paper_id}",
+                "title": title,
+                "abstract": abstract,
+                "year": year,
+                "citation_count": 0,
+                "source": "arxiv",
+                "is_oa": True,
+                "doi": doi,
+                "pmcid": "",
+                "pmid": "",
+                "full_text_url": full_text_url,
+                "best_oa_pdf_url": pdf_url,
+                "oa_url": landing_url,
+            }
+        except Exception as e:
+            print(f"✗ Error normalizing arXiv paper: {e}")
             return None
     
     def insert_papers(self, papers: List[Dict[str, Any]]) -> int:

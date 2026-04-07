@@ -35,10 +35,12 @@ interface ConflictMapViewProps {
 
 interface ProjectLibraryViewProps {
   projects: WorkspaceProject[];
+  archivedProjects?: WorkspaceProject[];
   currentProjectId: string;
   onSwitchProject: (projectId: string) => void;
   onRenameProject: (projectId: string, name: string) => void;
   onDeleteProject: (projectId: string) => void;
+  onRestoreProject?: (projectId: string) => void;
   onSelectQuery: (queryId: string) => void;
   disableActions?: boolean;
 }
@@ -238,10 +240,12 @@ function EditableProjectTitle({
 
 export const ProjectLibraryView = memo(function ProjectLibraryView({
   projects,
+  archivedProjects = [],
   currentProjectId,
   onSwitchProject,
   onRenameProject,
   onDeleteProject,
+  onRestoreProject,
   onSelectQuery,
   disableActions,
 }: ProjectLibraryViewProps) {
@@ -299,14 +303,39 @@ export const ProjectLibraryView = memo(function ProjectLibraryView({
         })}
       </div>
 
+      {archivedProjects.length > 0 && (
+        <div className="mt-5 border-t border-slate-200 pt-4">
+          <p className="text-[11px] uppercase tracking-wider text-slate-500 font-semibold mb-2">Archived Projects</p>
+          <div className="space-y-2">
+            {archivedProjects.map(project => (
+              <section key={project.id} className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-800">{project.name}</p>
+                    <p className="text-[11px] text-slate-500">{project.queries.length} stored queries</p>
+                  </div>
+                  <button
+                    onClick={() => onRestoreProject?.(project.id)}
+                    className="px-2.5 py-1 text-[11px] font-semibold rounded border border-blue-300 text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+                    disabled={disableActions || !onRestoreProject}
+                  >
+                    Restore
+                  </button>
+                </div>
+              </section>
+            ))}
+          </div>
+        </div>
+      )}
+
       {confirmDeleteProjectId && (
         <div className="absolute inset-0 bg-black/25 flex items-center justify-center p-4">
           <div className="bg-white rounded-xl border border-slate-200 shadow-lg max-w-sm w-full p-4">
             <div className="flex items-start justify-between gap-2 mb-2">
-              <p className="text-sm font-semibold text-slate-900">Delete project?</p>
+              <p className="text-sm font-semibold text-slate-900">Permanently delete project?</p>
               <button onClick={() => setConfirmDeleteProjectId(null)} className="text-slate-500"><X size={14} /></button>
             </div>
-            <p className="text-xs text-slate-600 mb-3">This will remove the project and all stored queries from local workspace history.</p>
+            <p className="text-xs text-slate-600 mb-3">This permanently removes the project and all associated queries/results. This action cannot be undone.</p>
             <div className="flex justify-end gap-2">
               <button onClick={() => setConfirmDeleteProjectId(null)} className="px-3 py-1.5 text-xs border border-slate-300 rounded">Cancel</button>
               <button
@@ -314,9 +343,9 @@ export const ProjectLibraryView = memo(function ProjectLibraryView({
                   onDeleteProject(confirmDeleteProjectId);
                   setConfirmDeleteProjectId(null);
                 }}
-                className="px-3 py-1.5 text-xs bg-red-600 text-white rounded"
+                className="px-3 py-1.5 text-xs bg-red-700 text-white rounded"
               >
-                Delete
+                Delete Permanently
               </button>
             </div>
           </div>

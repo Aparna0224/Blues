@@ -73,6 +73,10 @@ class Config:
     SEMANTIC_SCHOLAR_API_KEY = os.getenv("SEMANTIC_SCHOLAR_API_KEY", "")
     SEMANTIC_SCHOLAR_BASE_URL = os.getenv("SEMANTIC_SCHOLAR_BASE_URL", "https://api.semanticscholar.org/graph/v1")
     SEMANTIC_SCHOLAR_TIMEOUT = 30
+
+    # arXiv API Settings
+    ARXIV_BASE_URL = os.getenv("ARXIV_BASE_URL", "https://export.arxiv.org/api/query")
+    ARXIV_TIMEOUT = int(os.getenv("ARXIV_TIMEOUT", "30"))
     
     # Default Paper Source
     DEFAULT_PAPER_SOURCE = os.getenv("DEFAULT_PAPER_SOURCE", "openalex")
