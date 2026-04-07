@@ -12,6 +12,7 @@ export default function QueryForm({ onSubmit, loading }: Props) {
   const [userLevel, setUserLevel] = useState<'auto' | 'beginner' | 'intermediate' | 'advanced'>('auto');
   const [numDocs, setNumDocs] = useState(10);
   const [mode, setMode] = useState<'dynamic' | 'cached'>('dynamic');
+  const [paperSource, setPaperSource] = useState<'openalex' | 'semantic_scholar' | 'arxiv' | 'both' | 'all'>('all');
   const [includeSummary, setIncludeSummary] = useState(true);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [filterSection, setFilterSection] = useState('');
@@ -43,6 +44,7 @@ export default function QueryForm({ onSubmit, loading }: Props) {
       query: query.trim(),
       num_documents: numDocs,
       mode,
+      paper_source: paperSource,
       include_summary: includeSummary,
       user_level: userLevel,
       filters: Object.keys(filters).length ? filters : undefined,
@@ -189,6 +191,23 @@ export default function QueryForm({ onSubmit, loading }: Props) {
             </button>
           </div>
 
+          {/* Paper source */}
+          <div style={{ marginTop: 12, display: 'grid', gridTemplateColumns: '200px 1fr', gap: 10, alignItems: 'center' }}>
+            <label style={{ fontSize: 12, color: 'var(--text-secondary)', fontWeight: 600 }}>Paper Source</label>
+            <select
+              value={paperSource}
+              onChange={e => setPaperSource(e.target.value as 'openalex' | 'semantic_scholar' | 'arxiv' | 'both' | 'all')}
+              disabled={loading || mode !== 'dynamic'}
+              style={{ ...inputBase, fontSize: 12, maxWidth: 260 }}
+            >
+              <option value="all">All (OpenAlex + Semantic Scholar + arXiv)</option>
+              <option value="openalex">OpenAlex</option>
+              <option value="semantic_scholar">Semantic Scholar</option>
+              <option value="arxiv">arXiv</option>
+              <option value="both">OpenAlex + Semantic Scholar</option>
+            </select>
+          </div>
+
           {/* Metadata filters */}
           <div style={{ marginTop: 12, padding: '12px 14px', borderRadius: 9, border: '1px solid rgba(255,255,255,0.08)', background: 'rgba(255,255,255,0.03)' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 10 }}>
@@ -196,7 +215,14 @@ export default function QueryForm({ onSubmit, loading }: Props) {
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
               {[
-                { label: 'Section', isSelect: true, options: ['Any', 'abstract', 'body'], val: filterSection, set: setFilterSection, optVals: ['', 'abstract', 'body'] },
+                {
+                  label: 'Section',
+                  isSelect: true,
+                  options: ['Any', 'abstract', 'introduction', 'related_work', 'methodology', 'dataset', 'results', 'discussion', 'limitations', 'conclusion', 'body'],
+                  val: filterSection,
+                  set: setFilterSection,
+                  optVals: ['', 'abstract', 'introduction', 'related_work', 'methodology', 'dataset', 'results', 'discussion', 'limitations', 'conclusion', 'body'],
+                },
                 { label: 'Category', isSelect: false, placeholder: 'e.g., rag', val: filterCategory, set: setFilterCategory },
                 { label: 'Tags', isSelect: false, placeholder: 'comma-separated', val: filterTags, set: setFilterTags },
                 { label: 'Title contains', isSelect: false, placeholder: 'keyword', val: filterTitleContains, set: setFilterTitleContains },

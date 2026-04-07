@@ -8,6 +8,9 @@ The summary is appended to the existing output — it does NOT replace
 or modify any Stage 4 content.
 """
 
+import re
+import logging
+from collections import Counter
 from typing import Dict, Any, Optional, List
 
 from src.llm.base import BaseLLM
@@ -16,50 +19,50 @@ from src.llm.base import BaseLLM
 # ── Prompt template ──────────────────────────────────────────────
 
 _SUMMARY_PROMPT = """\
-You are an expert research analyst writing a high-quality literature review synthesis.
+You are an expert research analyst writing a structured literature review.
 
-Your task is to transform the provided evidence-grounded draft into a clear, insightful, and academically strong summary.
+Your task: transform the evidence-grounded draft below into a clear,
+insightful, comparative summary.  You MUST output EXACTLY four sections,
+each separated by the delimiter line: ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 STRICT RULES:
 - Use ONLY the provided content — do not introduce external knowledge.
 - Do NOT copy sentences directly — synthesize and rephrase.
-- Avoid generic phrases like "mixed approaches", "patterns observed", "no strong trend", or metric placeholders.
-- Every paragraph must convey a meaningful insight, not just description.
-- Ensure all sentences are complete and coherent.
+- NEVER use generic phrases: 'various approaches', 'multiple methods',
+  'computational and analytical methods', 'trade-offs in interpretability'.
+- ALWAYS name specific papers, datasets, models, and metric values.
 
 ═══════════════════════════════
-WRITING GOAL
+REQUIRED OUTPUT FORMAT
 ═══════════════════════════════
 
-Produce a structured, publication-quality synthesis that:
+TOPIC OVERVIEW
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2-3 sentences: What is the research question? How many papers and
+sub-questions were used? Mention the scope (e.g. "5 papers spanning 2019-2024").
 
-1. Clearly explains what the topic is about
-2. Identifies the MAIN approaches used across papers
-3. Explains how these approaches DIFFER (not just that they exist)
-4. Highlights key findings and patterns
-5. Identifies any trends (e.g., shift from classical → ML)
-6. Ends with a strong, conclusive insight
+PAPER-BY-PAPER COMPARISON
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+For EACH paper in the draft, write one compact paragraph:
+• Paper title and year
+• Datasets used (name them)
+• Core methodology / model architecture (name it)
+• Key reported results (include metric values)
+• Unique contribution vs other papers
 
-═══════════════════════════════
-REQUIRED STRUCTURE
-═══════════════════════════════
+CROSS-PAPER ANALYSIS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1-2 paragraphs comparing across papers:
+• Which datasets are shared? Which are unique?
+• Where do methods agree? Where do they diverge?
+• Do results on shared datasets show consistent or conflicting performance?
 
-1) Topic Overview  
-- Define the problem clearly  
-- Mention scope of evidence (sub-questions + papers)
-
-2) Key Approaches  
-- Identify dominant methods (e.g., manual analysis, image processing, ML)  
-- Explain their purpose  
-
-3) Agreements and Differences  
-- What do papers agree on?  
-- Where do they differ (method, outcome, approach)?  
-- Be explicit and comparative  
-
-4) Overall Insight / Conclusion  
-- What does the literature collectively indicate?  
-- Mention any trend or limitation  
+SYNTHESIS & RESEARCH DIRECTION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1 paragraph:
+• What does the literature collectively indicate?
+• What gaps or limitations remain?
+• What should a researcher do next?
 
 ═══════════════════════════════
 CONTEXT
@@ -68,21 +71,53 @@ CONTEXT
 Query:
 {query}
 
-Evidence-based synthesis draft:
+Evidence-based structured draft:
 {deterministic_summary}
 
 ═══════════════════════════════
 OUTPUT REQUIREMENTS
 ═══════════════════════════════
-
 - Write in clear academic prose
-- Use 4 short paragraphs (one per section)
-- Ensure logical flow between sections
-- No bullet points
+- 4 sections separated by the delimiter ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+- Every section MUST include specific paper names and data points
+- No bullet points in prose paragraphs
 - No placeholders
-- No repetition
-- Explicitly mention method families, findings, and trend direction when supported.
+- No generic filler
 """
+
+# ── Stop words for term extraction ───────────────────────────────
+
+_STOP_WORDS = {
+    "what", "how", "why", "when", "where", "which", "is", "are",
+    "does", "do", "can", "the", "a", "an", "in", "of", "and",
+    "or", "to", "for", "on", "with", "by", "from", "as", "at",
+    "about", "into", "be", "this", "that", "it", "its", "their",
+    "they", "them", "we", "our", "you", "your", "using", "used",
+    "use", "uses", "benefits", "benefit", "been", "being", "was",
+    "were", "has", "had", "have", "will", "would", "could", "should",
+    "may", "might", "shall", "than", "then", "also", "such", "very",
+    "just", "only", "both", "each", "every", "some", "any", "most",
+    "more", "other", "over", "under", "through", "between", "during",
+    "before", "after", "above", "below", "these", "those", "there",
+    "here", "while", "where", "when", "not", "but", "however",
+    "although", "because", "since", "paper", "papers", "study",
+    "studies", "results", "result", "approach", "method", "based",
+    "approach", "proposed", "different", "provides", "show", "shows",
+    "shown", "found", "work", "present", "presented", "data",
+}
+
+# ── Generic phrases to detect LLM filler ─────────────────────────
+
+_GENERIC_PHRASES = [
+    "computational and analytical methods",
+    "various approaches",
+    "methodological variation",
+    "trade-offs in interpretability",
+    "implementation emphasis",
+    "patterns observed",
+    "mixed approaches",
+]
+
 
 class PipelineSummarizer:
     """Generates a publication-grade narrative from Stage 4 output.
@@ -119,6 +154,16 @@ class PipelineSummarizer:
         Returns:
             Formatted summary block ready to append to rag_output.txt.
         """
+        # Validate analysis_data schema — log warnings for missing keys
+        from src.utils.analysis_schema import validate_analysis_data
+        schema_warnings = validate_analysis_data(analysis_data or {})
+        if schema_warnings:
+            _log = logging.getLogger(__name__)
+            _log.warning(
+                "analysis_data has %d schema issue(s) — summary quality may be degraded",
+                len(schema_warnings),
+            )
+
         deterministic_summary = self._deterministic_literature_summary(
             analysis_data=analysis_data,
             grouped_answer=grouped_answer,
@@ -135,13 +180,60 @@ class PipelineSummarizer:
             summary_text = raw.strip()
 
             # Detect Groq/LLM error strings leaked as content
-            if summary_text.startswith("Error:") or not summary_text or len(summary_text.split()) < 40:
+            if summary_text.lower().startswith("error:"):
                 summary_text = deterministic_summary
+            # Detect too-short output
+            elif not summary_text or len(summary_text.split()) < 40:
+                summary_text = deterministic_summary
+            else:
+                # Detect generic filler (the main new check)
+                generic_hits = sum(
+                    1 for p in _GENERIC_PHRASES if p in summary_text.lower()
+                )
+                if generic_hits >= 2:
+                    # LLM produced generic filler — use deterministic draft instead
+                    summary_text = deterministic_summary
         except Exception as e:
             _ = e
             summary_text = deterministic_summary
 
         return self._format_summary_block(summary_text, verification_result)
+
+    # ─────────────────────────────────────────────────────────────
+    # Key term extraction from evidence
+    # ─────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _extract_key_terms(units: List[Dict[str, Any]], top_n: int = 8) -> List[str]:
+        """Extract the most frequent non-trivial terms from evidence units.
+
+        Tokenizes claim + text from each evidence unit, removes stop words,
+        and returns the top N most frequent meaningful terms.
+        """
+        if not units:
+            return []
+
+        combined_text = " ".join(
+            (u.get("claim") or "") + " " + (u.get("text") or "")
+            for u in units
+        ).lower()
+
+        # Tokenize and clean
+        raw_words = re.findall(r'[a-z][a-z\-]+[a-z]', combined_text)
+        filtered = [
+            w for w in raw_words
+            if len(w) > 3 and w not in _STOP_WORDS
+        ]
+
+        if not filtered:
+            return []
+
+        counts = Counter(filtered)
+        return [term for term, _ in counts.most_common(top_n)]
+
+    # ─────────────────────────────────────────────────────────────
+    # Deterministic summary builder
+    # ─────────────────────────────────────────────────────────────
 
     def _deterministic_literature_summary(
         self,
@@ -149,102 +241,156 @@ class PipelineSummarizer:
         grouped_answer: str,
         query: str,
     ) -> str:
-        """Create an evidence-grounded synthesis without relying on LLM inference."""
+        """Create a structured comparison draft from the comparison matrix.
+
+        This is deterministic — no LLM call.  It builds 6 labelled sections
+        that the LLM prompt can reshape into publication prose.  If the
+        comparison matrix is missing, falls back to the old 4-paragraph
+        approach.
+        """
         if not analysis_data or not analysis_data.get("sub_questions"):
             return (
-                f"For the query '{query}', the available evidence indicates multiple method families addressing the same problem from complementary angles.\n\n"
-                "The retrieved studies describe computational approaches that prioritize either interpretability, automation, or robustness under practical constraints.\n\n"
-                "Reported findings are directionally related but not identical, because papers evaluate different datasets, assumptions, and implementation choices.\n\n"
-                "Overall, the literature supports a converging objective while highlighting trade-offs that should guide method selection in context."
+                f"For the query '{query}', the available evidence indicates "
+                "multiple perspectives addressing the same problem from complementary angles.\n\n"
+                "Insufficient structured data to generate a comparison table."
             )
 
+        matrix = analysis_data.get("paper_comparison_matrix", [])
+        overlap = analysis_data.get("cross_paper_dataset_overlap", {})
         sub_sections = analysis_data.get("sub_questions", [])
+        num_subquestions = len(sub_sections)
+        num_papers = len(analysis_data.get("references", []))
+
+        # Collect all evidence units for conflict detection
         all_units: List[Dict[str, Any]] = []
-        conflict_count = 0
-
         for sub in sub_sections:
-            question = sub.get("question", "")
-            papers = sub.get("papers", [])
-            units = []
-            for p in papers:
-                units.extend(p.get("evidence_units", []))
-            all_units.extend(units)
-            conflict_count += len(sub.get("conflicts", []))
+            for p in sub.get("papers", []):
+                all_units.extend(p.get("evidence_units", []))
 
-            _ = question
+        lines: List[str] = []
 
-        methods_global = self._dominant_terms(all_units, category="methods")
-        findings_global = self._dominant_terms(all_units, category="findings")
-        differences = (
-            "Cross-paper claims include incompatible interpretations in selected areas"
-            if conflict_count > 0
-            else "Cross-paper claims are largely aligned but differ in implementation emphasis"
-        )
-        trend = " ".join(self._trend_flags(all_units))
+        # ── SECTION 1: Paper Overview Table ──────────────────────
+        lines.append("## SECTION 1: PAPER OVERVIEW TABLE")
+        lines.append("")
+        lines.append("| Title | Year | Datasets | Method / Model | Key Metrics |")
+        lines.append("|-------|------|----------|----------------|-------------|")
+        for row in matrix:
+            title = (row.get("title") or "Unknown")[:50]
+            year = row.get("year", "N/A")
+            datasets = ", ".join(row.get("datasets", [])[:3]) or "—"
+            models = ", ".join(row.get("model_names", [])[:2]) or "—"
+            methods = ", ".join(row.get("method_keywords", [])[:2])
+            method_str = f"{models}" + (f" ({methods})" if methods else "")
+            metrics = ", ".join(row.get("metrics", [])[:3]) or "—"
+            lines.append(f"| {title} | {year} | {datasets} | {method_str} | {metrics} |")
+        lines.append("")
 
-        overview_par = (
-            f"Overview: For '{query}', the collected evidence spans {len(sub_sections)} sub-questions "
-            f"and {len(analysis_data.get('references', []))} papers."
-        )
-        approaches_par = f"Key approaches include {methods_global}; these methods are used to address core analytical objectives with different trade-offs in data demand, interpretability, and automation."
-        differences_par = f"Agreements and differences: the evidence repeatedly highlights {findings_global}; {differences.lower()}."
-        conclusion_par = (
-            "Overall conclusion: the literature indicates a consistent methodological progression with topic-specific "
-            f"variation in reported outcomes. {trend}"
-        )
+        # ── SECTION 2: Methodology Comparison ────────────────────
+        lines.append("## SECTION 2: METHODOLOGY COMPARISON")
+        lines.append("")
+        for row in matrix:
+            title = row.get("title", "Unknown")[:50]
+            year = row.get("year", "N/A")
+            models = ", ".join(row.get("model_names", [])) or "unspecified models"
+            methods = ", ".join(row.get("method_keywords", [])) or "general computational pipeline"
+            evidence = (row.get("top_evidence") or "")[:150]
+            lines.append(
+                f"• {title} ({year}): Uses {models} with methodology focused on "
+                f"{methods}. Evidence: \"{evidence}...\""
+            )
+        lines.append("")
 
-        full = "\n\n".join([overview_par, approaches_par, differences_par, conclusion_par])
-        return full
-
-    @staticmethod
-    def _dominant_terms(units: List[Dict[str, Any]], category: str = "methods") -> str:
-        if not units:
-            return "limited evidence"
-        text = " ".join([(u.get("claim") or "") + " " + (u.get("text") or "") for u in units]).lower()
-        if category == "methods":
-            candidates = ["cnn", "deep learning", "neural", "otsu", "threshold", "morphological", "segmentation"]
+        # ── SECTION 3: Dataset Analysis ──────────────────────────
+        lines.append("## SECTION 3: DATASET ANALYSIS")
+        lines.append("")
+        if overlap:
+            lines.append("Shared datasets across papers:")
+            for ds, papers in overlap.items():
+                lines.append(f"  • {ds}: used by {', '.join(papers)}")
         else:
-            candidates = ["accuracy", "performance", "robust", "challenge", "limitation", "automation", "detection"]
+            lines.append("No shared datasets detected across papers.")
 
-        hits = [c for c in candidates if c in text]
-        if not hits:
-            return "computational and analytical methods described in the evidence"
-        return ", ".join(hits[:3])
+        unique_datasets: Dict[str, List[str]] = {}
+        for row in matrix:
+            for ds in row.get("datasets", []):
+                if ds not in overlap:
+                    unique_datasets.setdefault(ds, []).append(row.get("title", "Unknown")[:40])
+        if unique_datasets:
+            lines.append("\nPaper-specific datasets:")
+            for ds, papers in list(unique_datasets.items())[:8]:
+                lines.append(f"  • {ds}: {', '.join(papers)}")
+        lines.append("")
 
-    @staticmethod
-    def _trend_flags(units: List[Dict[str, Any]]) -> List[str]:
-        text = " ".join([(u.get("claim") or "") + " " + (u.get("text") or "") for u in units]).lower()
-        has_deep = any(k in text for k in ["cnn", "deep learning", "neural", "resnet", "unet"])
-        has_classical = any(k in text for k in ["otsu", "threshold", "morphological", "color space", "hsv", "rgb"])
-        if has_deep and has_classical:
-            return ["A trend from classical image processing toward deep learning is visible."]
-        if has_deep:
-            return ["Recent evidence is dominated by deep-learning-based approaches."]
-        if has_classical:
-            return ["Classical image-processing approaches remain prominent in the selected evidence."]
-        return ["Temporal method shift is not explicit in the available evidence, but methodological variation is clear."]
+        # ── SECTION 4: Results Comparison ────────────────────────
+        lines.append("## SECTION 4: RESULTS COMPARISON")
+        lines.append("")
+        for row in matrix:
+            title = row.get("title", "Unknown")[:50]
+            metrics = row.get("metrics", [])
+            if metrics:
+                lines.append(f"• {title}: {', '.join(metrics[:5])}")
+            else:
+                lines.append(f"• {title}: No quantitative metrics extracted.")
+        lines.append("")
 
-    # ─────────────────────────────────────────────────────────────
-    # Formatting
-    # ─────────────────────────────────────────────────────────────
+        # ── SECTION 5: Conflicts & Agreements ────────────────────
+        lines.append("## SECTION 5: CONFLICTS AND AGREEMENTS")
+        lines.append("")
+        try:
+            from src.comparison.conflict_detector import ConflictDetector
+            conflicts = ConflictDetector.detect_conflicts(all_units)
+            if conflicts:
+                lines.append(f"{len(conflicts)} cross-paper conflict(s) detected:")
+                for c in conflicts[:3]:
+                    a_title = c.get("a", {}).get("paper_title", "Paper A")[:30]
+                    b_title = c.get("b", {}).get("paper_title", "Paper B")[:30]
+                    lines.append(
+                        f"  • {a_title} vs {b_title}: "
+                        f"{c.get('type', 'unknown')} conflict (strength {c.get('strength', 0):.2f})"
+                    )
+            else:
+                lines.append("No cross-paper conflicts detected — claims are directionally aligned.")
+        except Exception:
+            lines.append("Conflict analysis unavailable.")
+
+        if overlap:
+            lines.append(f"\nAgreement: {len(overlap)} dataset(s) shared across papers allow direct comparison.")
+        lines.append("")
+
+        # ── SECTION 6: Raw Stats ─────────────────────────────────
+        lines.append("## SECTION 6: RAW STATS")
+        lines.append("")
+        lines.append(f"• Papers analyzed: {num_papers}")
+        lines.append(f"• Sub-questions addressed: {num_subquestions}")
+        lines.append(f"• Evidence units: {len(all_units)}")
+        conf = analysis_data.get("confidence_score")
+        if isinstance(conf, (int, float)):
+            lines.append(f"• Pipeline confidence: {conf:.2f}")
+        lines.append("")
+
+        return "\n".join(lines)
+
+    SECTION_DELIMITER = "━" * 40
 
     @staticmethod
     def _format_summary_block(
         summary_text: str,
         verification_result: Optional[Dict[str, Any]] = None,
     ) -> str:
-        """Wrap the LLM summary in a presentable output block."""
+        """Wrap the LLM summary in a presentable output block.
+
+        Uses Unicode ``━`` delimiters between sections.  The frontend
+        splits on this pattern to render structured cards.
+        """
         lines = [
             "",
-            "=" * 80,
-            "📝 RESEARCH SUMMARY",
-            "=" * 80,
+            "RESEARCH SUMMARY",
             "",
             summary_text,
             "",
         ]
 
-        # Append a brief confidence footer if result is available
+        # Append confidence footer as a coloured badge
         if verification_result:
             score = verification_result.get("confidence_score", 0)
             if score >= 0.75:
@@ -253,7 +399,8 @@ class PipelineSummarizer:
                 level = "MODERATE"
             else:
                 level = "LOW"
-            lines.append(f"── Pipeline Confidence: {score:.2f} ({level}) ──")
+            lines.append(f"Pipeline Confidence: {score:.2f} ({level})")
             lines.append("")
 
         return "\n".join(lines)
+

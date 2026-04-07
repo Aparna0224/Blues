@@ -1,6 +1,7 @@
 """Text chunking utilities for abstracts."""
 
 import uuid
+import re
 import nltk
 from typing import List, Dict, Any
 from src.config import Config
@@ -15,6 +16,17 @@ for _resource, _name in [('tokenizers/punkt_tab', 'punkt_tab'), ('tokenizers/pun
 
 class TextChunker:
     """Split abstracts into sentence-level chunks."""
+
+    _SECTION_PATTERNS = [
+        (re.compile(r'^\s*(?:\d+\.?\s+)?(?:abstract)\s*$', re.I), "abstract"),
+        (re.compile(r'^\s*(?:\d+\.?\s+)?(?:introduction|background|motivation|overview)\s*$', re.I), "introduction"),
+        (re.compile(r'^\s*(?:\d+\.?\s+)?(?:related work|literature review|prior work)\s*$', re.I), "related_work"),
+        (re.compile(r'^\s*(?:\d+\.?\s+)?(?:method|methods|methodology|approach|framework|system design|implementation)\s*$', re.I), "methodology"),
+        (re.compile(r'^\s*(?:\d+\.?\s+)?(?:dataset|data|data collection)\s*$', re.I), "dataset"),
+        (re.compile(r'^\s*(?:\d+\.?\s+)?(?:experiment|experiments|experimental|evaluation|results?|findings?|performance)\s*$', re.I), "results"),
+        (re.compile(r'^\s*(?:\d+\.?\s+)?(?:discussion|analysis|limitations?)\s*$', re.I), "discussion"),
+        (re.compile(r'^\s*(?:\d+\.?\s+)?(?:conclusion|conclusions?|future work|summary)\s*$', re.I), "conclusion"),
+    ]
     
     def __init__(self):
         self.min_sentences = Config.MIN_CHUNK_SENTENCES
@@ -87,6 +99,39 @@ class TextChunker:
         except Exception as e:
             print(f"✗ Error chunking text: {e}")
             return [text]  # Return original text as fallback
+
+    def _split_into_sections(self, text: str) -> List[tuple[str, str]]:
+        """Split full text into labeled sections using lightweight header detection."""
+        lines = text.split("\n")
+        sections: List[tuple[str, str]] = []
+        current_section = "introduction"
+        current_lines: List[str] = []
+
+        for line in lines:
+            stripped = line.strip()
+            matched = None
+            if stripped and len(stripped) <= 90:
+                for pattern, label in self._SECTION_PATTERNS:
+                    if pattern.match(stripped):
+                        matched = label
+                        break
+
+            if matched:
+                if current_lines:
+                    chunk = "\n".join(current_lines).strip()
+                    if chunk:
+                        sections.append((current_section, chunk))
+                current_section = matched
+                current_lines = []
+            else:
+                current_lines.append(line)
+
+        if current_lines:
+            chunk = "\n".join(current_lines).strip()
+            if chunk:
+                sections.append((current_section, chunk))
+
+        return sections if sections else [("body", text)]
     
     def create_chunks(self, papers: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
@@ -110,39 +155,54 @@ class TextChunker:
             year = paper.get("year", "")
             source = paper.get("source", "")
             
-            # Prefer full text when available, fall back to abstract
-            if full_text and len(full_text) > len(abstract or ""):
-                text_to_chunk = full_text
-                section = "body"
-            elif abstract:
-                text_to_chunk = abstract
-                section = "abstract"
-            else:
-                continue
-            
-            text_chunks = self.chunk_text(text_to_chunk)
             tag_source = " ".join([title or "", abstract or ""]).strip()
             tags = self._build_tags(tag_source)
             category = tags[0] if tags else "general"
-            
-            for idx, chunk_text in enumerate(text_chunks):
-                chunk = {
-                    "chunk_id": str(uuid.uuid4()),
-                    "paper_id": paper.get("paper_id"),
-                    "text": chunk_text,
-                    "section": section,
-                    "embedding_index": None,
-                    "chunk_order": idx,
-                    "metadata": {
-                        "title": title,
-                        "year": year,
-                        "section": section,
-                        "summary": self._summarize_chunk(chunk_text),
-                        "tags": tags,
-                        "category": category,
-                        "source": source,
-                    },
-                }
-                chunks.append(chunk)
+
+            # Prefer full text when available; chunk by inferred sections
+            if full_text and len(full_text) > len(abstract or ""):
+                text_sections = self._split_into_sections(full_text)
+                for section_name, section_text in text_sections:
+                    if not section_text.strip():
+                        continue
+                    section_chunks = self.chunk_text(section_text)
+                    for idx, chunk_text in enumerate(section_chunks):
+                        chunks.append({
+                            "chunk_id": str(uuid.uuid4()),
+                            "paper_id": paper.get("paper_id"),
+                            "text": chunk_text,
+                            "section": section_name,
+                            "embedding_index": None,
+                            "chunk_order": idx,
+                            "metadata": {
+                                "title": title,
+                                "year": year,
+                                "section": section_name,
+                                "summary": self._summarize_chunk(chunk_text),
+                                "tags": tags,
+                                "category": category,
+                                "source": source,
+                            },
+                        })
+            elif abstract:
+                abstract_chunks = self.chunk_text(abstract)
+                for idx, chunk_text in enumerate(abstract_chunks):
+                    chunks.append({
+                        "chunk_id": str(uuid.uuid4()),
+                        "paper_id": paper.get("paper_id"),
+                        "text": chunk_text,
+                        "section": "abstract",
+                        "embedding_index": None,
+                        "chunk_order": idx,
+                        "metadata": {
+                            "title": title,
+                            "year": year,
+                            "section": "abstract",
+                            "summary": self._summarize_chunk(chunk_text),
+                            "tags": tags,
+                            "category": category,
+                            "source": source,
+                        },
+                    })
         
         return chunks

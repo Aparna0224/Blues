@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle, HelpCircle, Plus, Wifi, WifiOff,
-  Compass, Library, ShieldAlert, Bookmark
+  Compass, Library, ShieldAlert, Bookmark, Menu
 } from 'lucide-react';
 import QueryForm from './components/QueryForm';
 import FileUpload from './components/FileUpload';
@@ -36,10 +36,12 @@ function App() {
     currentQueryId,
     isLoading,
     projects,
+  archivedProjects,
     createProject,
     switchProject,
     renameProject,
     deleteProject,
+  restoreProject,
     clearCurrentQuery,
     updateQueryTrace,
     setIsLoading,
@@ -54,6 +56,8 @@ function App() {
   const [pausedActionsMessage, setPausedActionsMessage] = useState('');
   const [projectNameEditing, setProjectNameEditing] = useState(false);
   const [projectNameDraft, setProjectNameDraft] = useState('');
+  const [isMobile, setIsMobile] = useState<boolean>(window.innerWidth <= 1024);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   const contentRef = useRef<HTMLDivElement>(null);
   const previousNavRef = useRef(activeNav);
@@ -72,6 +76,16 @@ function App() {
     getStatus()
       .then(() => setBackendOnline(true))
       .catch(() => setBackendOnline(false));
+  }, []);
+
+  useEffect(() => {
+    const onResize = () => {
+      const mobile = window.innerWidth <= 1024;
+      setIsMobile(mobile);
+      if (!mobile) setMobileNavOpen(false);
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
   }, []);
 
   useEffect(() => {
@@ -109,7 +123,11 @@ function App() {
     }, 2500);
 
     try {
-      const data = await runQuery(req);
+      const data = await runQuery({
+        ...req,
+        user_id: 'local_user',
+        project_id: currentProject?.id,
+      });
 
       let trace: unknown | null = null;
       try {
@@ -119,7 +137,7 @@ function App() {
       }
 
       addQueryRecord({
-        query_id: data.execution_id,
+        query_id: data.query_id || data.execution_id,
         query_text: req.query,
         result: data,
         trace,
@@ -141,6 +159,9 @@ function App() {
       return;
     }
     action();
+    if (isMobile) {
+      setMobileNavOpen(false);
+    }
   };
 
   const submitProjectRename = () => {
@@ -149,13 +170,15 @@ function App() {
     setProjectNameEditing(false);
   };
 
-  const handleSelectQuery = async (queryId: string) => {
-    loadQuery(queryId);
-    const selected = projects.flatMap(p => p.queries).find(q => q.query_id === queryId);
+  const handleSelectQuery = async (queryId: string, navigateToCurrent: boolean = false) => {
+    if (navigateToCurrent) {
+      setActiveNav('current');
+    }
+    const selected = await loadQuery(queryId);
     if (selected?.trace) return;
 
     try {
-      const trace = await getTrace(queryId);
+      const trace = await getTrace(selected?.result.execution_id || queryId);
       updateQueryTrace(queryId, trace);
     } catch {
       updateQueryTrace(queryId, null);
@@ -187,26 +210,28 @@ function App() {
         return (
           <ProjectLibraryView
             projects={projects}
+            archivedProjects={archivedProjects}
             currentProjectId={currentProject?.id ?? ''}
             onSwitchProject={(projectId) => runWhenIdle(() => switchProject(projectId))}
             onRenameProject={renameProject}
             onDeleteProject={(projectId) => runWhenIdle(() => deleteProject(projectId))}
-            onSelectQuery={(queryId) => runWhenIdle(() => { void handleSelectQuery(queryId); })}
+            onRestoreProject={(projectId) => runWhenIdle(() => restoreProject(projectId))}
+            onSelectQuery={(queryId) => runWhenIdle(() => { void handleSelectQuery(queryId, true); })}
             disableActions={isLoading}
           />
         );
       case 'saved':
-        return <SavedSynthesisView projects={projects} onSelectQuery={(queryId) => runWhenIdle(() => { void handleSelectQuery(queryId); })} />;
+        return <SavedSynthesisView projects={projects} onSelectQuery={(queryId) => runWhenIdle(() => { void handleSelectQuery(queryId, true); })} />;
       default:
         return <CurrentQueryView result={currentResult} />;
     }
   };
 
   return (
-    <div style={{ display: 'flex', height: '100vh', background: 'var(--bg-primary)', overflow: 'hidden' }}>
+    <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', height: '100vh', background: 'var(--bg-primary)', overflow: 'hidden' }}>
 
       {/* Left sidebar */}
-      <aside style={{ width: 'var(--sidebar-width)', background: 'var(--bg-sidebar)', borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', flexShrink: 0 }}>
+      <aside style={{ width: isMobile ? '100%' : 'var(--sidebar-width)', background: 'var(--bg-sidebar)', borderRight: isMobile ? 'none' : '1px solid var(--border)', borderBottom: isMobile ? '1px solid var(--border)' : 'none', display: (isMobile && !mobileNavOpen) ? 'none' : 'flex', flexDirection: 'column', flexShrink: 0, maxHeight: isMobile ? '50vh' : 'none' }}>
         <div style={{ padding: '20px 16px 16px', borderBottom: '1px solid var(--border)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 2 }}>
             <div style={{ width: 30, height: 30, borderRadius: 7, background: '#0f265c', color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700 }}>
@@ -254,7 +279,7 @@ function App() {
           <QueryHistoryPanel
             project={currentProject}
             currentQueryId={currentQueryId}
-            onSelectQuery={(queryId) => runWhenIdle(() => { void handleSelectQuery(queryId); })}
+            onSelectQuery={(queryId) => runWhenIdle(() => { void handleSelectQuery(queryId, true); })}
             disableActions={isLoading}
           />
           <button
@@ -291,6 +316,15 @@ function App() {
 
         <header style={{ background: 'var(--bg-secondary)', borderBottom: '1px solid var(--border)', padding: '0 24px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', height: 56, flexShrink: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            {isMobile && (
+              <button
+                onClick={() => setMobileNavOpen(prev => !prev)}
+                style={{ border: '1px solid rgba(15,38,92,0.2)', background: 'rgba(15,38,92,0.06)', borderRadius: 7, width: 30, height: 30, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                title="Toggle navigation"
+              >
+                <Menu size={14} />
+              </button>
+            )}
             <span style={{ fontSize: 12, fontWeight: 700, color: '#0f265c', letterSpacing: '0.04em' }}>BLUES</span>
             {projectNameEditing ? (
               <input
@@ -346,8 +380,8 @@ function App() {
           </div>
         </header>
 
-        <div ref={contentRef} style={{ flex: 1, overflowY: 'auto', padding: '26px 34px' }}>
-          <div style={{ maxWidth: 960, margin: '0 auto' }}>
+        <div ref={contentRef} style={{ flex: 1, overflowY: 'auto', padding: isMobile ? '14px 12px' : '26px 34px' }}>
+          <div style={{ maxWidth: isMobile ? '100%' : 960, margin: '0 auto' }}>
             {activeNav === 'current' && (
               <div className="glass-card" style={{ overflow: 'hidden', marginBottom: 24 }}>
                 <div style={{ padding: '18px 22px' }}>

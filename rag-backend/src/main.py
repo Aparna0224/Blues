@@ -19,10 +19,10 @@ def cli():
 @cli.command()
 @click.option('--query', prompt='Enter search query', help='Search query for papers')
 @click.option('--max-results', default=10, help='Maximum papers to fetch')
-@click.option('--source', default=None, type=click.Choice(['openalex', 'semantic_scholar', 'both']), 
-              help='Paper source API (default: from config, use "both" for dual API)')
+@click.option('--source', default=None, type=click.Choice(['openalex', 'semantic_scholar', 'arxiv', 'both', 'all']), 
+              help='Paper source API (default: from config, use "both" for dual API, "all" for OpenAlex+S2+arXiv)')
 def ingest(query, max_results, source):
-    """Ingest papers from OpenAlex, Semantic Scholar, or both APIs."""
+    """Ingest papers from OpenAlex, Semantic Scholar, arXiv, or combined sources."""
     source_name = source or Config.DEFAULT_PAPER_SOURCE
     click.echo(f"\n📚 Starting ingestion for: {query}")
     click.echo(f"   Source: {source_name}")
@@ -90,7 +90,7 @@ def build_index():
 @click.option('--filter-year-min', default=None, type=int, help='Minimum publication year')
 @click.option('--filter-year-max', default=None, type=int, help='Maximum publication year')
 @click.option('--filter-title-contains', default=None, help='Filter by title substring')
-@click.option('--filter-source', default=None, help='Filter by source (openalex/semantic_scholar)')
+@click.option('--filter-source', default=None, help='Filter by source (openalex/semantic_scholar/arxiv)')
 def query(
     query,
     top_k,

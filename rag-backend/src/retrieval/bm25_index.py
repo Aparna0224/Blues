@@ -113,12 +113,14 @@ class BM25Index:
                 self._is_built = True
                 return
 
+            # Fetch all papers once to avoid N+1 query overhead
+            all_papers = list(papers_collection.find({}))
+            papers_lookup = {p.get("paper_id"): p for p in all_papers if p.get("paper_id")}
+
             # Build chunk dicts with paper metadata
             chunks = []
             for chunk in raw_chunks:
-                paper = papers_collection.find_one(
-                    {"paper_id": chunk.get("paper_id")}
-                )
+                paper = papers_lookup.get(chunk.get("paper_id"))
                 metadata = chunk.get("metadata") or {}
                 if not metadata and paper:
                     metadata = {
@@ -177,13 +179,35 @@ class BM25Index:
     def _build_index(self, chunks: List[Dict[str, Any]]) -> None:
         """Internal: tokenize corpus and construct BM25Okapi model.
 
+        If a chunk has ``paper_facts`` (populated by Phase 2 extract_paper_facts),
+        the fact tokens are repeated FACTS_BOOST_FACTOR times to increase recall
+        for comparison-focused queries.
+
         Args:
             chunks: List of chunk dicts to index.
         """
+        FACTS_BOOST_FACTOR = 3
+
         self._chunks = list(chunks)
-        self._tokenized_corpus = [
-            self._tokenize(c.get("text", "")) for c in self._chunks
-        ]
+        tokenized: List[List[str]] = []
+
+        for c in self._chunks:
+            tokens = self._tokenize(c.get("text", ""))
+
+            # Boost paper_facts tokens if present
+            facts = c.get("paper_facts")
+            if isinstance(facts, dict):
+                boost_text_parts: List[str] = []
+                for key in ("datasets", "model_names", "metrics"):
+                    for val in (facts.get(key) or []):
+                        boost_text_parts.append(str(val).lower())
+                if boost_text_parts:
+                    boost_tokens = self._tokenize(" ".join(boost_text_parts))
+                    tokens.extend(boost_tokens * FACTS_BOOST_FACTOR)
+
+            tokenized.append(tokens)
+
+        self._tokenized_corpus = tokenized
         self._bm25 = BM25Okapi(self._tokenized_corpus)
         self._is_built = True
 

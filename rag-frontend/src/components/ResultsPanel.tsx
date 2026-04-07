@@ -102,6 +102,137 @@ const card: React.CSSProperties = {
 
 const subCard: React.CSSProperties = { ...card, overflow: 'hidden', marginBottom: 14 };
 
+// ── Structured Summary Parser (Phase 5) ────────────────────────
+
+const SECTION_DELIMITER = '━━━';
+
+interface SummarySection {
+  icon: React.ReactNode;
+  title: string;
+  type: 'topic' | 'comparison' | 'cross' | 'synthesis' | 'generic';
+  content: string;
+}
+
+function parseSummarySections(text: string): SummarySection[] | null {
+  if (!text.includes(SECTION_DELIMITER)) return null;
+
+  const parts = text.split(/━{3,}/);
+  const sections: SummarySection[] = [];
+
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+
+    // Detect section type from emoji/header
+    if (trimmed.includes('TOPIC OVERVIEW') || /TOPIC OVERVIEW/i.test(trimmed)) {
+      sections.push({ icon: <FileText size={15} />, title: 'Topic Overview', type: 'topic', content: trimmed.replace(/(🔬\s*)?TOPIC OVERVIEW\s*/i, '').trim() });
+    } else if (trimmed.includes('PAPER-BY-PAPER') || /PAPER.BY.PAPER/i.test(trimmed)) {
+      sections.push({ icon: <BarChart3 size={15} />, title: 'Paper-by-Paper Comparison', type: 'comparison', content: trimmed.replace(/(📊\s*)?PAPER.BY.PAPER COMPARISON\s*/i, '').trim() });
+    } else if (trimmed.includes('CROSS-PAPER') || /CROSS.PAPER/i.test(trimmed)) {
+      sections.push({ icon: <Layers size={15} />, title: 'Cross-Paper Analysis', type: 'cross', content: trimmed.replace(/(🔁\s*)?CROSS.PAPER ANALYSIS\s*/i, '').trim() });
+    } else if (trimmed.includes('SYNTHESIS') || /SYNTHESIS/i.test(trimmed)) {
+      sections.push({ icon: <Brain size={15} />, title: 'Synthesis & Research Direction', type: 'synthesis', content: trimmed.replace(/(💡\s*)?SYNTHESIS.*?\n/i, '').trim() });
+    } else if (trimmed.includes('Pipeline Confidence')) {
+      // Confidence badge line — skip, handled separately
+      continue;
+    } else if (trimmed.length > 20) {
+      sections.push({ icon: <ScrollText size={15} />, title: 'Analysis', type: 'generic', content: trimmed });
+    }
+  }
+
+  return sections.length > 0 ? sections : null;
+}
+
+function extractConfidenceBadge(text: string): { score: string; level: string } | null {
+  const match = text.match(/Pipeline Confidence:\s*([0-9.]+)\s*\((\w+)\)/);
+  if (!match) return null;
+  return { score: match[1], level: match[2] };
+}
+
+function renderSectionContent(section: SummarySection) {
+  const paragraphs = section.content.split(/\n{2,}/).filter(Boolean);
+
+  if (section.type === 'comparison') {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {paragraphs.map((p, i) => (
+          <div key={i} className="paper-card">
+            <p style={{ margin: 0, fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.7, fontFamily: 'var(--font-display)' }}>
+              {p}
+            </p>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (section.type === 'cross') {
+    return (
+      <div className="callout-cross-analysis">
+        {paragraphs.map((p, i) => (
+          <p key={i} style={{ margin: i < paragraphs.length - 1 ? '0 0 8px' : 0, fontFamily: 'var(--font-display)' }}>{p}</p>
+        ))}
+      </div>
+    );
+  }
+
+  if (section.type === 'synthesis') {
+    return (
+      <div className="callout-synthesis">
+        {paragraphs.map((p, i) => (
+          <p key={i} style={{ margin: i < paragraphs.length - 1 ? '0 0 8px' : 0, fontFamily: 'var(--font-display)' }}>{p}</p>
+        ))}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {paragraphs.map((p, i) => (
+        <p key={i} style={{ margin: i < paragraphs.length - 1 ? '0 0 8px' : 0, fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.7, fontFamily: 'var(--font-display)' }}>{p}</p>
+      ))}
+    </div>
+  );
+}
+
+
+
+function FinalAISummary({ summary }: { summary: string }) {
+  const sections = parseSummarySections(summary);
+  const confidence = extractConfidenceBadge(summary);
+
+  // Fallback: render as single prose block if no structured sections
+  if (!sections) {
+    return (
+      <p style={{ margin: 0, fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.7, fontFamily: 'var(--font-display)' }}>
+        {summary}
+      </p>
+    );
+  }
+
+  return (
+    <div>
+      {sections.map((section, idx) => (
+        <div key={idx} className="summary-section">
+          <div className={`summary-section-header ${section.type}`}>
+            <span>{section.icon}</span>
+            <span>{section.title}</span>
+          </div>
+          {renderSectionContent(section)}
+        </div>
+      ))}
+
+      {confidence && (
+        <div style={{ marginTop: 12, display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span className={`confidence-badge-${confidence.level.toLowerCase()}`}>
+            Confidence Score: {confidence.score} — {confidence.level}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function ResultsPanel({ result }: Props) {
   const r = result;
   const { currentProject, currentQuery } = useWorkspace();
@@ -291,9 +422,7 @@ export default function ResultsPanel({ result }: Props) {
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8, fontSize: 12, fontWeight: 600, color: '#0f265c' }}>
             <ScrollText size={13} /> Final AI Summary
           </div>
-          <p style={{ margin: 0, fontSize: 14, color: 'var(--text-secondary)', lineHeight: 1.7, fontFamily: 'var(--font-display)' }}>
-            {r.summary}
-          </p>
+          <FinalAISummary summary={r.summary} />
         </div>
       )}
 

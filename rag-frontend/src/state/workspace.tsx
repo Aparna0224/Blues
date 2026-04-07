@@ -1,5 +1,14 @@
 /* eslint-disable react-refresh/only-export-components */
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import {
+  createProject as createProjectApi,
+  hardDeleteProject as hardDeleteProjectApi,
+  getQueryResult,
+  listProjectQueries,
+  listProjects,
+  restoreProject as restoreProjectApi,
+  updateProject as updateProjectApi,
+} from '../services/api';
 import type { QueryResponse } from '../types';
 
 export interface StoredQuery {
@@ -14,6 +23,7 @@ export interface WorkspaceProject {
   id: string;
   name: string;
   queries: StoredQuery[];
+  isArchived?: boolean;
 }
 
 interface WorkspaceState {
@@ -23,6 +33,7 @@ interface WorkspaceState {
   isLoading: boolean;
   queryHistory: StoredQuery[];
   projects: WorkspaceProject[];
+  archivedProjects: WorkspaceProject[];
 }
 
 interface WorkspaceContextValue extends WorkspaceState {
@@ -32,11 +43,12 @@ interface WorkspaceContextValue extends WorkspaceState {
   switchProject: (projectId: string) => void;
   renameProject: (projectId: string, name: string) => void;
   deleteProject: (projectId: string) => void;
+  restoreProject: (projectId: string) => void;
   clearCurrentQuery: () => void;
   updateQueryTrace: (queryId: string, trace: unknown | null) => void;
   setIsLoading: (loading: boolean) => void;
   addQueryRecord: (record: StoredQuery) => void;
-  loadQuery: (queryId: string) => void;
+  loadQuery: (queryId: string) => Promise<StoredQuery | null>;
 }
 
 const STORAGE_KEY = 'blues.workspace.v1';
@@ -58,6 +70,7 @@ function createInitialState(): WorkspaceState {
     isLoading: false,
     queryHistory: [],
     projects: [project],
+    archivedProjects: [],
   };
 }
 
@@ -85,6 +98,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
 
       return {
         ...parsed,
+        archivedProjects: parsed.archivedProjects ?? [],
         currentProjectId: existingProject.id,
         currentQueryId: currentQuery?.query_id ?? null,
         currentResult: currentQuery?.result ?? null,
@@ -99,18 +113,124 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   }, [state]);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    const hydrateFromBackend = async () => {
+      try {
+    const projectRecords = await listProjects('local_user', true);
+        if (!projectRecords.length || cancelled) return;
+
+    const hydratedProjects: WorkspaceProject[] = [];
+    const hydratedArchivedProjects: WorkspaceProject[] = [];
+
+        for (const p of projectRecords) {
+          const queryMeta = await listProjectQueries(p.project_id);
+          const queriesRaw = await Promise.all(
+            queryMeta.slice(0, 30).map(async q => {
+              try {
+                const result = await getQueryResult(q.query_id);
+                return {
+                  query_id: q.query_id,
+                  query_text: q.query_text,
+                  result,
+                  trace: null,
+                  timestamp: q.created_at,
+                } as StoredQuery;
+              } catch {
+                return null;
+              }
+            }),
+          );
+
+          const hydratedProject = {
+            id: p.project_id,
+            name: p.name,
+            queries: queriesRaw.filter((x): x is StoredQuery => Boolean(x)),
+            isArchived: p.is_archived,
+          };
+
+          if (p.is_archived) {
+            hydratedArchivedProjects.push(hydratedProject);
+          } else {
+            hydratedProjects.push(hydratedProject);
+          }
+        }
+
+        if (cancelled) return;
+
+        if (!hydratedProjects.length) {
+          setState(prev => ({
+            ...prev,
+            archivedProjects: hydratedArchivedProjects,
+          }));
+          return;
+        }
+
+        const preferredProject =
+          hydratedProjects.find(p => p.id === state.currentProjectId) ?? hydratedProjects[0];
+        const preferredQuery =
+          preferredProject.queries.find(q => q.query_id === state.currentQueryId) ??
+          preferredProject.queries[preferredProject.queries.length - 1] ??
+          null;
+
+        const allQueries = hydratedProjects.flatMap(p => p.queries);
+
+        setState(prev => ({
+          ...prev,
+          projects: hydratedProjects,
+          archivedProjects: hydratedArchivedProjects,
+          queryHistory: allQueries,
+          currentProjectId: preferredProject.id,
+          currentQueryId: preferredQuery?.query_id ?? null,
+          currentResult: preferredQuery?.result ?? null,
+        }));
+      } catch {
+        // keep local fallback silently
+      }
+    };
+
+    void hydrateFromBackend();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const createProject = (name?: string) => {
-    setState(prev => {
-      const nextIndex = prev.projects.length + 1;
-      const project = createDefaultProject(name?.trim() || `Project ${nextIndex}`);
-      return {
-        ...prev,
-        currentProjectId: project.id,
-        currentQueryId: null,
-        currentResult: null,
-        projects: [...prev.projects, project],
-      };
-    });
+    const nextName = (name?.trim() || '').trim();
+    const fallbackName = nextName || `Project ${state.projects.length + 1}`;
+
+    void createProjectApi({
+      name: fallbackName,
+      user_id: 'local_user',
+      description: '',
+    })
+      .then(created => {
+        setState(prev => {
+          const project: WorkspaceProject = { id: created.project_id, name: created.name, queries: [] };
+          return {
+            ...prev,
+            currentProjectId: project.id,
+            currentQueryId: null,
+            currentResult: null,
+            archivedProjects: prev.archivedProjects.filter(p => p.id !== project.id),
+            projects: [...prev.projects, project],
+          };
+        });
+      })
+      .catch(() => {
+        // local fallback if backend create fails
+        setState(prev => {
+          const project = createDefaultProject(fallbackName);
+          return {
+            ...prev,
+            currentProjectId: project.id,
+            currentQueryId: null,
+            currentResult: null,
+            projects: [...prev.projects, project],
+          };
+        });
+      });
   };
 
   const switchProject = (projectId: string) => {
@@ -130,16 +250,30 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const renameProject = (projectId: string, name: string) => {
     const nextName = name.trim();
     if (!nextName) return;
+
     setState(prev => ({
       ...prev,
       projects: prev.projects.map(project =>
         project.id === projectId ? { ...project, name: nextName } : project,
       ),
     }));
+
+    void updateProjectApi(projectId, { name: nextName }, 'local_user')
+      .then(updated => {
+        setState(prev => ({
+          ...prev,
+          projects: prev.projects.map(project =>
+            project.id === projectId ? { ...project, name: updated.name } : project,
+          ),
+        }));
+      })
+      .catch(() => {
+        // keep optimistic local name if backend unavailable
+      });
   };
 
   const deleteProject = (projectId: string) => {
-    setState(prev => {
+    const removeProjectState = (prev: WorkspaceState): WorkspaceState => {
       if (prev.projects.length <= 1) {
         return prev;
       }
@@ -163,8 +297,68 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         currentProjectId: fallbackProject?.id ?? prev.currentProjectId,
         currentQueryId: fallbackQuery?.query_id ?? null,
         currentResult: fallbackQuery?.result ?? null,
+        archivedProjects: prev.archivedProjects.filter(project => project.id !== projectId),
       };
-    });
+    };
+
+    void hardDeleteProjectApi(projectId, 'local_user')
+      .then(() => {
+        setState(prev => removeProjectState(prev));
+      })
+      .catch(() => {
+        // hard-delete must succeed on backend; keep local state unchanged on failure
+      });
+  };
+
+  const restoreProject = (projectId: string) => {
+    const archived = state.archivedProjects.find(project => project.id === projectId);
+    if (!archived) return;
+
+    const hydrateRestoredQueries = async () => {
+      const queryMeta = await listProjectQueries(projectId);
+      const queriesRaw = await Promise.all(
+        queryMeta.slice(0, 30).map(async q => {
+          try {
+            const result = await getQueryResult(q.query_id);
+            return {
+              query_id: q.query_id,
+              query_text: q.query_text,
+              result,
+              trace: null,
+              timestamp: q.created_at,
+            } as StoredQuery;
+          } catch {
+            return null;
+          }
+        }),
+      );
+      return queriesRaw.filter((x): x is StoredQuery => Boolean(x));
+    };
+
+    void restoreProjectApi(projectId, 'local_user')
+      .then(async restored => {
+        const restoredQueries = await hydrateRestoredQueries();
+        setState(prev => {
+          const restoredProject: WorkspaceProject = {
+            id: restored.project_id,
+            name: restored.name,
+            queries: restoredQueries,
+            isArchived: false,
+          };
+          return {
+            ...prev,
+            projects: [...prev.projects, restoredProject],
+            archivedProjects: prev.archivedProjects.filter(project => project.id !== projectId),
+            currentProjectId: restoredProject.id,
+            currentQueryId: restoredQueries[restoredQueries.length - 1]?.query_id ?? null,
+            currentResult: restoredQueries[restoredQueries.length - 1]?.result ?? null,
+            queryHistory: [...prev.queryHistory, ...restoredQueries],
+          };
+        });
+      })
+      .catch(() => {
+        // keep state unchanged when restore fails
+      });
   };
 
   const clearCurrentQuery = () => {
@@ -212,7 +406,12 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
     });
   };
 
-  const loadQuery = (queryId: string) => {
+  const loadQuery = async (queryId: string): Promise<StoredQuery | null> => {
+    const baseQuery = findQuery(state.projects, queryId);
+    if (!baseQuery) {
+      return null;
+    }
+
     setState(prev => {
       const loaded = findQuery(prev.projects, queryId);
       if (!loaded) return prev;
@@ -225,6 +424,34 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
         currentResult: loaded.result,
       };
     });
+
+    try {
+      const hydratedResult = await getQueryResult(queryId);
+
+      setState(prev => ({
+        ...prev,
+        projects: prev.projects.map(project => ({
+          ...project,
+          queries: project.queries.map(query =>
+            query.query_id === queryId ? { ...query, result: hydratedResult } : query,
+          ),
+        })),
+        queryHistory: prev.queryHistory.map(query =>
+          query.query_id === queryId ? { ...query, result: hydratedResult } : query,
+        ),
+        currentResult: prev.currentQueryId === queryId ? hydratedResult : prev.currentResult,
+      }));
+
+      return {
+        query_id: baseQuery.query_id,
+        query_text: baseQuery.query_text,
+        result: hydratedResult,
+        trace: baseQuery.trace,
+        timestamp: baseQuery.timestamp,
+      };
+    } catch {
+      return baseQuery;
+    }
   };
 
   const value = useMemo<WorkspaceContextValue>(() => {
@@ -238,9 +465,10 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       createProject,
       switchProject,
       renameProject,
-  deleteProject,
-  clearCurrentQuery,
-  updateQueryTrace,
+      deleteProject,
+  restoreProject,
+      clearCurrentQuery,
+      updateQueryTrace,
       setIsLoading,
       addQueryRecord,
       loadQuery,
