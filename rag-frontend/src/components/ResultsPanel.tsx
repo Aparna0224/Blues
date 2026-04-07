@@ -114,9 +114,15 @@ interface SummarySection {
 }
 
 function parseSummarySections(text: string): SummarySection[] | null {
-  if (!text.includes(SECTION_DELIMITER)) return null;
+  if (!text) return null;
 
-  const parts = text.split(/━{3,}/);
+  // Clean legacy formatting artifacts from older queries
+  let cleanText = text.replace(/={5,}\s*(📝\s*)?RESEARCH SUMMARY\s*={5,}/gi, '');
+  cleanText = cleanText.replace(/RESEARCH SUMMARY/gi, '');
+
+  if (!cleanText.includes(SECTION_DELIMITER)) return null;
+
+  const parts = cleanText.split(/━{3,}/);
   const sections: SummarySection[] = [];
 
   for (const part of parts) {
