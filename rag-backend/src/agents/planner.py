@@ -64,6 +64,20 @@ JSON Output:"""
         "methodology": ["method", "approach", "pipeline", "framework", "technique", "constructed"],
     }
 
+    # ── Comparison-aware planning (Phase 1) ──────────────────────
+
+    COMPARISON_SEARCH_SUFFIXES = [
+        "{topic} dataset benchmark evaluation",
+        "{topic} methodology approach architecture",
+        "{topic} accuracy results performance metrics",
+    ]
+
+    MANDATORY_COMPARISON_TEMPLATES = [
+        "What datasets or benchmark corpora does each paper use for training and evaluation of {topic}?",
+        "What are the core methodological steps, model architectures, or algorithmic approaches proposed by each paper on {topic}?",
+        "What quantitative results, accuracy metrics, or performance benchmarks does each paper report for {topic}?",
+    ]
+
     def __init__(self, llm: BaseLLM):
         """
         Initialize PlannerAgent.
@@ -96,6 +110,20 @@ JSON Output:"""
             if any(k in sq for k in keys):
                 return intent
         return "methodology"
+
+    @staticmethod
+    def _extract_topic_keywords(question: str, top_n: int = 3) -> str:
+        """Extract top N non-stopword keywords from the question as a topic phrase."""
+        stop_words = {
+            "what", "how", "why", "when", "where", "which", "is", "are",
+            "does", "do", "can", "the", "a", "an", "in", "of", "and", "or",
+            "to", "for", "on", "with", "by", "from", "as", "at", "about",
+            "into", "be", "this", "that", "it", "its", "their", "they",
+            "using", "used", "use", "each", "paper", "papers",
+        }
+        words = question.lower().replace("?", "").split()
+        keywords = [w for w in words if w not in stop_words and len(w) > 2]
+        return " ".join(keywords[:top_n])
 
     def _prune_background_subquestions(self, sub_questions: List[str], resolved_level: str, main_question: str) -> List[str]:
         if resolved_level not in {"intermediate", "advanced"}:
@@ -200,7 +228,10 @@ JSON Output:"""
             
             print(f"✓ Generated plan with {len(plan['sub_questions'])} sub-questions")
             print(f"✓ Generated {len(plan['search_queries'])} search queries")
-            
+
+            # ── Inject comparison-aware sub-questions & queries ───
+            plan = self._inject_comparison_plan(plan, question)
+
             return plan
             
         except Exception as e:
@@ -212,6 +243,7 @@ JSON Output:"""
                 sq: self._classify_subquestion_intent(sq)
                 for sq in fallback.get("sub_questions", [])
             }
+            fallback = self._inject_comparison_plan(fallback, question)
             return fallback
     
     def _parse_json(self, raw_output: str) -> Dict[str, Any]:
@@ -345,3 +377,48 @@ JSON Output:"""
         
         output.append("")
         return "\n".join(output)
+
+    def _inject_comparison_plan(
+        self, plan: Dict[str, Any], question: str,
+    ) -> Dict[str, Any]:
+        """Append mandatory comparison sub-questions and search queries.
+
+        Always injects three axes: dataset, methodology, results.
+        Limits total sub-questions to 7 and search queries to 7.
+        Adds ``comparison_axes`` key to the plan dict.
+        """
+        topic = self._extract_topic_keywords(question)
+        if not topic:
+            topic = question[:60]
+
+        # Append comparison sub-questions (deduplicate against existing)
+        existing_sq_lower = {sq.lower() for sq in plan.get("sub_questions", [])}
+        for template in self.MANDATORY_COMPARISON_TEMPLATES:
+            cq = template.format(topic=topic)
+            if cq.lower() not in existing_sq_lower:
+                plan.setdefault("sub_questions", []).append(cq)
+                existing_sq_lower.add(cq.lower())
+
+        # Append comparison search queries
+        existing_srch_lower = {sq.lower() for sq in plan.get("search_queries", [])}
+        for suffix in self.COMPARISON_SEARCH_SUFFIXES:
+            csq = suffix.format(topic=topic)
+            if csq.lower() not in existing_srch_lower:
+                plan.setdefault("search_queries", []).append(csq)
+                existing_srch_lower.add(csq.lower())
+
+        # Cap to reasonable limits
+        plan["sub_questions"] = plan["sub_questions"][:7]
+        plan["search_queries"] = plan["search_queries"][:7]
+
+        # Update intents map for new sub-questions
+        plan["subquestion_intents"] = {
+            sq: self._classify_subquestion_intent(sq)
+            for sq in plan.get("sub_questions", [])
+        }
+
+        # Mark comparison axes
+        plan["comparison_axes"] = ["dataset", "methodology", "results"]
+
+        print(f"✓ Injected comparison plan: {len(plan['sub_questions'])} sub-Qs, {len(plan['search_queries'])} search queries")
+        return plan

@@ -27,6 +27,29 @@ class HybridRetriever:
     applies metadata filters post-fusion, and evidence extraction last.
     """
 
+    # Phase 6: Map query keywords → preferred paper sections for biased scoring
+    SECTION_BIAS_MAP: Dict[str, List[str]] = {
+        "dataset": ["dataset", "data", "experiment", "material"],
+        "benchmark": ["dataset", "experiment", "evaluation"],
+        "model": ["method", "approach", "architecture", "model"],
+        "architecture": ["method", "approach", "architecture", "model"],
+        "methodology": ["method", "approach", "methodology"],
+        "algorithm": ["method", "approach", "algorithm"],
+        "result": ["result", "experiment", "evaluation", "performance"],
+        "accuracy": ["result", "experiment", "evaluation"],
+        "performance": ["result", "experiment", "evaluation"],
+        "metric": ["result", "experiment", "evaluation"],
+    }
+
+    @classmethod
+    def _get_section_bias(cls, query: str) -> Optional[List[str]]:
+        """Return preferred sections for this query based on keyword matching."""
+        q_lower = (query or "").lower()
+        for keyword, sections in cls.SECTION_BIAS_MAP.items():
+            if keyword in q_lower:
+                return sections
+        return None
+
     def __init__(self, use_evidence: bool = True):
         """Initialize HybridRetriever.
 
@@ -97,6 +120,11 @@ class HybridRetriever:
         # Evidence extraction last
         if self.use_evidence and fused:
             fused = self._extract_evidence(query, fused)
+
+        # Extract structured paper facts (Phase 2)
+        if fused:
+            from src.retrieval.paper_facts import extract_paper_facts
+            fused = extract_paper_facts(fused)
 
         return fused
 
@@ -189,6 +217,21 @@ class HybridRetriever:
         # Soft precision filtering (post-fusion and post-dedup)
         results = self._apply_soft_filtering(search_queries[0], results)
 
+        # Phase 6: Section-biased scoring per sub-query
+        for query in search_queries:
+            bias_sections = self._get_section_bias(query)
+            if bias_sections:
+                for chunk in results:
+                    chunk_section = str(
+                        (chunk.get("metadata") or {}).get("section", chunk.get("section", ""))
+                    ).lower()
+                    if any(bs in chunk_section for bs in bias_sections):
+                        chunk["final_score"] = chunk.get("final_score", chunk.get("rrf_score", 0)) * 1.15
+                        chunk["section_bias_applied"] = True
+
+        # Re-sort after bias boost
+        results.sort(key=lambda c: c.get("final_score", c.get("rrf_score", 0)), reverse=True)
+
         # Limit to max_total
         results = results[:max_total]
 
@@ -201,6 +244,11 @@ class HybridRetriever:
         if self.use_evidence and results:
             main_query = search_queries[0] if search_queries else ""
             results = self._extract_evidence(main_query, results)
+
+        # Extract structured paper facts (Phase 2)
+        if results:
+            from src.retrieval.paper_facts import extract_paper_facts
+            results = extract_paper_facts(results)
 
         return results
 

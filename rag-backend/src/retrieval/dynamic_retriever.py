@@ -500,7 +500,17 @@ class DynamicRetriever:
         if self.use_evidence and results:
             print(f"   📌 Extracting sentence-level evidence...")
             results = self._extract_evidence(main_query, results)
-        
+
+        # Step 12: Extract structured paper facts (Phase 2)
+        if results:
+            from src.retrieval.paper_facts import extract_paper_facts
+            results = extract_paper_facts(results)
+            facts_count = sum(
+                1 for r in results
+                if any(r.get("paper_facts", {}).get(k) for k in ("datasets", "metrics", "model_names"))
+            )
+            print(f"   ✓ Extracted paper facts from {facts_count}/{len(results)} chunks")
+
         return results
     
     def _relabel_body_chunks(self, chunks: list, chunks_collection) -> list:
@@ -537,6 +547,12 @@ class DynamicRetriever:
     def _infer_section_from_text(text: str) -> str:
         """Lightweight section inference using keyword signals."""
         t = text.lower()
+        # Phase 6: dataset_description detection
+        if any(k in t for k in ["we use", "we collected", "the dataset",
+                                  "training set", "test set", "images from",
+                                  "annotated", "ground truth", "data augmentation",
+                                  "data collection", "samples were"]):
+            return "dataset_description"
         if any(k in t for k in ["we propose", "this paper presents", "we introduce",
                                   "in this work", "our approach", "the proposed"]):
             return "methodology"
