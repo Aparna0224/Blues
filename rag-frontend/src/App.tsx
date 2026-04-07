@@ -170,7 +170,10 @@ function App() {
     setProjectNameEditing(false);
   };
 
-  const handleSelectQuery = async (queryId: string) => {
+  const handleSelectQuery = async (queryId: string, navigateToCurrent: boolean = false) => {
+    if (navigateToCurrent) {
+      setActiveNav('current');
+    }
     const selected = await loadQuery(queryId);
     if (selected?.trace) return;
 
@@ -213,12 +216,12 @@ function App() {
             onRenameProject={renameProject}
             onDeleteProject={(projectId) => runWhenIdle(() => deleteProject(projectId))}
             onRestoreProject={(projectId) => runWhenIdle(() => restoreProject(projectId))}
-            onSelectQuery={(queryId) => runWhenIdle(() => { void handleSelectQuery(queryId); })}
+            onSelectQuery={(queryId) => runWhenIdle(() => { void handleSelectQuery(queryId, true); })}
             disableActions={isLoading}
           />
         );
       case 'saved':
-        return <SavedSynthesisView projects={projects} onSelectQuery={(queryId) => runWhenIdle(() => { void handleSelectQuery(queryId); })} />;
+        return <SavedSynthesisView projects={projects} onSelectQuery={(queryId) => runWhenIdle(() => { void handleSelectQuery(queryId, true); })} />;
       default:
         return <CurrentQueryView result={currentResult} />;
     }
@@ -276,7 +279,7 @@ function App() {
           <QueryHistoryPanel
             project={currentProject}
             currentQueryId={currentQueryId}
-            onSelectQuery={(queryId) => runWhenIdle(() => { void handleSelectQuery(queryId); })}
+            onSelectQuery={(queryId) => runWhenIdle(() => { void handleSelectQuery(queryId, true); })}
             disableActions={isLoading}
           />
           <button
