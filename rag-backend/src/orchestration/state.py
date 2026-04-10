@@ -17,3 +17,4 @@ class ResearchState(TypedDict):
     warnings: List[str]           # populated by verify_node
     trace: dict                   # appended by every node
     should_expand: bool           # set by verify_node, read by router
+    analysis_data: Optional[dict] # populated by generate_node

@@ -84,7 +84,7 @@ class Config:
     ARXIV_TIMEOUT = int(os.getenv("ARXIV_TIMEOUT", "30"))
     
     # Default Paper Source
-    DEFAULT_PAPER_SOURCE = os.getenv("DEFAULT_PAPER_SOURCE", "openalex")
+    DEFAULT_PAPER_SOURCE = os.getenv("DEFAULT_PAPER_SOURCE", "both")
     
     # Chunking Settings
     MIN_CHUNK_SENTENCES = int(os.getenv("MIN_CHUNK_SENTENCES", "8"))

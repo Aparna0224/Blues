@@ -44,8 +44,9 @@ async def generate_node(state: ResearchState) -> dict:
     
     # In full system, AnswerGenerator does the conflict detection internally or delegates it.
     conflicts = getattr(generator, "last_conflicts", [])
+    analysis_data = generator.get_last_analysis()
     
-    return {"answer": grouped_answer, "conflicts": conflicts}
+    return {"answer": grouped_answer, "conflicts": conflicts, "analysis_data": analysis_data}
 
 async def verify_node(state: ResearchState) -> dict:
     """Deterministically score confidence and set expansion flag if low."""
@@ -112,7 +113,7 @@ async def summarize_node(state: ResearchState) -> dict:
         grouped_answer=state.get("answer", ""),
         verification_output=str(state.get("verification_result", {})), # Placeholder mapping
         verification_result=state.get("verification_result", {}),
-        analysis_data={}, # To be populated if needed
+        analysis_data=state.get("analysis_data", {}),
         query=state["query"]
     )
     

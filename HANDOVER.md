@@ -1,150 +1,412 @@
-# Blues — Full Project Handover (Backend + Frontend)
+# 📄 HANDOVER.md (Production-Grade)
 
-Prepared for: External product/content review (Feedough)
-Project: **Blues**
-Type: **Agentic RAG Research Assistant**
+## 1. Project Overview
+
+### Title
+
+**Agentic RAG Research System with Verification Loop**
+
+### Objective
+
+This system upgrades a traditional RAG pipeline into a **fully agentic research system** capable of:
+
+* Planning research queries
+* Retrieving multi-source knowledge
+* Generating structured answers
+* Verifying factual correctness
+* Expanding weak areas iteratively
+* Producing final summarized output
+
+### Core Concept
+
+Unlike standard RAG, this system:
+
+* Uses **LangGraph orchestration**
+* Implements **multi-step reasoning loops**
+* Includes **self-verification and expansion cycles**
 
 ---
 
-## 1) Product Overview
+## 2. Tech Stack
 
-Blues is an explainable, agentic research assistant that answers user queries using retrieved scientific evidence. 
-Recently upgraded to feature a complete dual-pane persistent dashboard UI, strict enterprise-grade academic RAG generation, and robust memory context handling.
-
-It combines:
-- Planning (query decomposition into sub-questions)
-- Hybrid retrieval (BM25 + Semantic + RRF)
-- Sentence-level evidence extraction
-- Structured generation (sub-question → paper → evidence)
-- Verification and conflict detection (XAI)
-- Local storage persistent application framework with seamless background generation caching.
-
-Core promise: **grounded answers with traceable evidence**, not free-form hallucinated output.
+| Layer           | Technology                     |
+| --------------- | ------------------------------ |
+| Backend         | FastAPI                        |
+| Orchestration   | LangGraph                      |
+| LLM             | Ollama (DeepSeek / Mistral)    |
+| Embeddings      | Ollama / Sentence Transformers |
+| Vector DB       | FAISS / Chroma                 |
+| Database        | MongoDB                        |
+| Frontend        | React                          |
+| Async Execution | asyncio                        |
 
 ---
 
-## 2) Repository Structure
+## 3. High-Level Architecture
 
 ```text
-Blues/
-├── HANDOVER.md
-├── CODE_CHANGES_SUMMARY.md
-├── README.md
-├── rag-backend/
-│   ├── src/
-│   │   ├── agents/               # Planner + verification agents
-│   │   ├── chunking/             # Text chunking logic
-│   │   ├── comparison/           # Conflict detection and comparison synthesis
-│   │   ├── embeddings/           # Embedding model wrapper (SciBERT)
-│   │   ├── evidence/             # Sentence-level evidence extraction
-│   │   ├── export/               # Report generation/export helpers
-│   │   ├── generation/           # Main answer generator + summarizer
-│   │   ├── ingestion/            # Paper ingestion/fulltext collection
-│   │   ├── llm/                  # LLM provider abstraction
-│   │   ├── retrieval/            # Hybrid retrieval components (BM25Index)
-│   │   ├── trace/                # Trace writer/reader
-│   │   ├── api.py                # FastAPI routes
-│   │   ├── main.py               # CLI entrypoint
-│   │   └── config.py             # Runtime configuration
-│   ├── tests/
-│   └── pyproject.toml
-└── rag-frontend/
-    ├── src/
-    │   ├── components/           # UI components (Panels, History)
-    │   ├── services/             # API client methods
-    │   ├── state/                # Workspace/Local Storage management
-    │   ├── types/                # TS contracts
-    │   ├── index.css             # Utility classes and custom themes
-    │   └── App.tsx               # Primary Controller
-    └── package.json
+User Query
+   ↓
+Planner Node
+   ↓
+Retriever Node (parallel)
+   ↓
+Generator Node
+   ↓
+Verifier Node
+   ↓
+ ┌───────────────┐
+ ↓               ↓
+Expand Node     Summarize Node
+ ↓
+Generator (loop)
 ```
 
 ---
 
-## 3) Backend Architecture (Detailed)
+## 4. LangGraph Flow Design
 
-### 3.1 Request lifecycle
-1. User sends query to API.
-2. Planner decomposes query into sub-questions and search intents.
-3. Hybrid retriever fetches candidate chunks utilizing FAISS Cosine distance combined with BM25 Lexical scoring.
-4. Evidence extractor selects sentence-level support.
-5. Generator builds structured response by sub-question.
-6. Comparison/conflict layer adds XAI reasoning.
-7. System generates an academic, emotion-less summary narrative over strict delimiter parsings.
-8. Trace is persisted for reproducibility.
+### Nodes Implemented
 
-### 3.2 Major backend modules
-- `src/api.py`: FastAPI endpoints. Orchestrates query, status, trace, and exports.
-- `src/retrieval/hybrid_retriever.py`: Integrates dense vectors with sparse tokens using Reciprocal Rank Fusion. Ensures edge-case queries don't fail zero-evidence gates.
-- `src/generation/generator.py`: Applies section and subquestion filtering mapping outputs against validation frameworks. Outputs trace evidence.
-- `src/generation/summarizer.py`: Orchestrates cross-topic synthesis formatted cleanly via Markdown `==` delimiters.
-- `src/trace/tracer.py`: Captures full execution logic tree.
+#### 1. `plan`
 
----
+* Breaks user query into sub-questions
+* Output: structured plan
 
-## 4) Frontend Architecture (Detailed)
+#### 2. `retrieve`
 
-### 4.1 Stack
-- React + TypeScript + Vite
-- Lucide React standard Icons + Inter Textual displays structure over standard Tailwind.
+* Runs **parallel retrieval**
+* Sources:
 
-### 4.2 UI flow
-1. User navigates workspaces in left sidebar. Views specific history items or executes new queries.
-2. Form actions communicate silently utilizing timeout-safe intervals.
-3. System triggers layout-stable UI animations to populate specific analysis sections parsing exact structured chunks back from payload strings.
-4. Final displays flag metrics like "Confidence score", "Trust Banding" directly connected to Trace elements.
+  * Vector DB
+  * External APIs (optional)
+* Uses `asyncio.gather`
 
-### 4.3 Key UI components
-- `components/ResultsPanel.tsx` — Handles regex-based text strip rendering and exact splitting over LLM logic payloads. Maps content directly into Lucide SVGs natively.
-- `components/WorkspacePanels.tsx` — Drives modular UI elements such as `AnalysisHealthPanel` logic.
-- `state/workspace.tsx` — Robust state framework bridging HTTP memory fetch calls with persistent LocalStorage UI triggers.
+#### 3. `generate`
 
----
+* Produces answers using LLM
+* Combines retrieved context
 
-## 5) Current Capabilities
+#### 4. `verify`
 
-### Implemented and working
-- Fully offline-capable UI/UX routing that correctly hooks API states.
-- Exact Hybrid RAG algorithm scoring.
-- Traceability reporting down to the specific `sentence_id` + heading location. 
-- Fast start APIs batched loading into singleton modules.
+* Checks:
 
-### Focus metrics / Quality Controls
-- Removed legacy "emojis" (`🔬, 📊`) injecting purely academic text.
-- Reconfigured structural logic enforcing strict `type:topic | synthesis` validation against LLM formatting shifts.
-- Corrected frontend timeline navigation where historical context fetching failed to switch active views.
+  * Missing information
+  * Unsupported claims
+* Outputs:
+
+  * `needs_expansion: true/false`
+  * `missing_topics: []`
+
+#### 5. `expand`
+
+* Generates new queries for missing gaps
+* Loops back to retrieve → generate
+
+#### 6. `summarize`
+
+* Produces final clean output
 
 ---
 
-## 6) API Summary (External Consumer View)
-> Input contracts are stable. Retrieval architecture accepts multi-tenant project `local_user` indexing.
+## 5. State Schema (CRITICAL)
 
-- Query execution (agentic answer generation logic).
-- Status verification checks over local index thresholds.
-- DB fetch/push mechanisms via FastAPI local sync schemas to Frontend's `WorkspaceProvider`.
-
----
-
-## 7) How to Run Locally
-
-### Backend (`rag-backend`)
-```bash
-cd rag-backend
-uv run uvicorn src.api:app --host 0.0.0.0 --port 8000 --reload
-```
-### Frontend (`rag-frontend`)
-```bash
-cd rag-frontend
-npm run dev
+```python
+class GraphState(TypedDict):
+    query: str
+    plan: list
+    retrieved_docs: list
+    generated_answer: str
+    verification: dict
+    expanded_queries: list
+    final_answer: str
 ```
 
 ---
 
-## 8) Handover for Feedough (What to Emphasize)
+## 6. Key Features Implemented
 
-Highlights to feature:
-- **Differentiator:** Entirely Explainable. Does not rely on generic summarizations, but sentence bounded logic mapping utilizing BM25 + FAISS architecture.
-- **Trust Features:** Pipeline displays logic pathways directly to end-user as XAI Trace logs nested in UI dashboard elements.
-- **Enterprise Grade UX:** Fully modular workspace contexts mirroring best in class productivity apps. 
+### Agentic Loop
 
-> “Blues is an explainable research assistant that decomposes complex queries, retrieves and verifies evidence across papers, and returns structured literature-style insights with traceable confidence.”
+* Conditional edge:
+
+```python
+if verification["needs_expansion"]:
+    go to expand
+else:
+    go to summarize
+```
+
+### Parallel Retrieval
+
+```python
+await asyncio.gather(
+    retrieve_vector(),
+    retrieve_external()
+)
+```
+
+### Iterative Improvement
+
+* Expand → Generate loop continues until:
+
+  * No missing info
+  * OR max iterations reached
+
+---
+
+## 7. Current Issues (VERY IMPORTANT)
+
+### Issue 1: Repetitive Output
+
+* Same sub-question repeated:
+
+```text
+⚠ No specific evidence found for this sub-question
+```
+
+#### Possible Causes
+
+* Retrieval failure
+* Poor embedding match
+* Verifier too strict
+* Expand generating duplicate queries
+
+---
+
+### Issue 2: Weak Retrieval Quality
+
+* Missing relevant documents
+* Low semantic match
+
+---
+
+### Issue 3: Over-Summarization
+
+* System synthesizes instead of showing raw evidence
+
+---
+
+### Issue 4: Improper JSON Handling (FastAPI + LLM)
+
+* LLM output not structured properly
+* Causes parsing issues
+
+---
+
+## 8. Expected Behavior
+
+The system should:
+
+* NOT repeat sub-questions
+* Provide **evidence-backed answers**
+* Avoid hallucinations
+* Expand only when necessary
+* Return structured, clean output
+
+---
+
+## 9. What Needs to be Fixed
+
+### Priority Fixes
+
+1. **Deduplicate sub-questions**
+2. Improve retrieval relevance
+3. Fix verifier logic (too aggressive)
+4. Ensure expand generates NEW queries
+5. Enforce structured LLM output
+6. Stop empty responses propagation
+
+---
+
+## 10. Constraints
+
+* Must work with local LLM (Ollama)
+* Must support async execution
+* Must be production-safe (no crashes)
+* Must return JSON-compatible output
+
+---
+
+## 11. Files to Focus On
+
+* `graph.py` → LangGraph pipeline
+* `retriever.py` → retrieval logic
+* `generator.py` → LLM calls
+* `verifier.py` → validation logic
+* `expand.py` → query expansion
+* `main.py` → FastAPI integration
+
+---
+
+## 12. Debug Strategy
+
+1. Log each node output
+2. Validate state transitions
+3. Print verification decisions
+4. Track duplicate queries
+5. Inspect embeddings similarity scores
+
+---
+
+# 🚀 MASTER PROMPT FOR CLAUDE / LLM
+
+Use this prompt directly:
+
+---
+
+## 🔥 SYSTEM PROMPT
+
+You are a senior AI systems engineer specializing in:
+
+* Agentic RAG systems
+* LangGraph orchestration
+* LLM pipelines
+* Retrieval optimization
+* Debugging production AI systems
+
+You must:
+
+* Analyze deeply
+* Identify root causes (not surface issues)
+* Provide exact fixes (code-level if needed)
+* Avoid generic advice
+
+---
+
+## 📥 INPUT CONTEXT
+
+I am providing you with a full project handover.
+
+This is an **Agentic RAG system** built using:
+
+* LangGraph
+* FastAPI
+* Ollama (DeepSeek / Mistral)
+* FAISS/Chroma
+
+The system includes:
+
+* Planner
+* Retriever (parallel)
+* Generator
+* Verifier
+* Expand loop
+* Summarizer
+
+---
+
+## 🚨 PROBLEMS TO FIX
+
+1. Repeated sub-questions:
+
+   * "No specific evidence found..."
+   * Same questions appearing multiple times
+
+2. Weak retrieval:
+
+   * Missing relevant context
+
+3. Over-synthesis:
+
+   * I want evidence, not summaries
+
+4. Verifier issues:
+
+   * Too aggressive → unnecessary expansion
+
+5. Expand loop:
+
+   * Generates duplicate queries
+
+6. JSON output issues:
+
+   * LLM output not structured properly
+
+---
+
+## 🎯 YOUR TASK
+
+Perform the following:
+
+### 1. Root Cause Analysis
+
+* Explain WHY each issue is happening
+* Trace through pipeline stages
+
+### 2. Pipeline Fixes
+
+* Suggest exact improvements for:
+
+  * Retrieval
+  * Verification
+  * Expansion logic
+  * Deduplication
+
+### 3. Code-Level Fixes
+
+Provide:
+
+* Updated functions
+* Improved prompts
+* Better state handling
+
+### 4. Prompt Engineering Fixes
+
+* Fix generator prompt
+* Fix verifier prompt
+* Fix expand prompt
+
+### 5. Optimization
+
+* Improve:
+
+  * Latency
+  * Accuracy
+  * Stability
+
+### 6. Output Format Fix
+
+* Ensure strict JSON output
+
+---
+
+## ⚠️ CONSTRAINTS
+
+* Do NOT redesign entire system
+* Work within current architecture
+* Must support local LLM (Ollama)
+* Must be async-compatible
+
+---
+
+## ✅ EXPECTED OUTPUT
+
+* Clear diagnosis
+* Step-by-step fixes
+* Code snippets
+* Improved prompts
+* Final improved pipeline design
+
+---
+
+# 🧠 Optional Add-on (Highly Recommended)
+
+Include this in your prompt:
+
+```text
+Also suggest evaluation metrics for:
+- Retrieval quality
+- Answer correctness
+- Expansion efficiency
+```
+
+---
+
+# ✔️ Final Note
+
+This handover is designed so that:
+
+* A **new engineer** can onboard instantly
+* An **LLM like Claude** can debug effectively
+* Your system moves from **prototype → production-grade agent**

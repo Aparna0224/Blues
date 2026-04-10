@@ -402,7 +402,7 @@ async def run_query(req: QueryRequest):
             "main_question": plan.get("main_question", req.query),
             "sub_questions": sub_questions,
             "search_queries": search_queries,
-            "latency_ms": planning_ms,
+            "latency_ms": 0,
         },
         grouped_answer=grouped_answer,
         chunks_used=len(chunks),
