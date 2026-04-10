@@ -12,7 +12,7 @@ export default function AnalysisHealthPanel({ result, showSummary = true }: Prop
 
     const papersCount = result.papers_found.length;
     const trustScore = result.verification?.confidence_score;
-    const trustPct = trustScore != null ? (trustScore * 100).toFixed(0) : null;
+    const trustPct = trustScore != null ? Math.round(trustScore * 100) : null;
     const trustColor = trustScore == null ? '#94a3b8' : trustScore >= 0.75 ? '#34d399' : trustScore >= 0.5 ? '#fbbf24' : '#f87171';
 
     return (
@@ -59,7 +59,7 @@ export default function AnalysisHealthPanel({ result, showSummary = true }: Prop
                             </p>
                             <div className="flex items-end gap-2">
                                 <span className="text-4xl font-bold" style={{ color: trustColor }}>
-                                    {(parseFloat(trustPct) / 100).toFixed(2)}
+                                    {trustPct}%
                                 </span>
                             </div>
                             <div className="mt-1.5 h-1 rounded-full" style={{ background: 'rgba(255,255,255,0.06)' }}>

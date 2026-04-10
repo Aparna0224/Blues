@@ -80,7 +80,7 @@ export interface VerificationMetrics {
   source_diversity: number;
   normalized_source_diversity: number;
   evidence_density: number;
-  conflicts_detected: string[];
+  conflicts_detected: boolean | string[];
 }
 
 export interface VerificationAudit {

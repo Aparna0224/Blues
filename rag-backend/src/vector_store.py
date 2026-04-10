@@ -28,8 +28,13 @@ class FAISSVectorStore:
             base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
             raw_path = os.path.join(base_dir, raw_path)
         self.index_path = raw_path
-        self._initialize_index()
         self._initialized = True
+        
+    def _lazy_load(self):
+        """Load index only when first queried."""
+        if self.index is not None:
+            return
+        self._initialize_index()
     
     def _initialize_index(self):
         """Initialize FAISS index."""
@@ -57,6 +62,7 @@ class FAISSVectorStore:
             List of embedding indices assigned by FAISS
         """
         try:
+            self._lazy_load()
             if not isinstance(embeddings, np.ndarray):
                 embeddings = np.array(embeddings)
             
@@ -91,6 +97,7 @@ class FAISSVectorStore:
             Tuple of (distances, indices)
         """
         try:
+            self._lazy_load()
             if not isinstance(query_embedding, np.ndarray):
                 query_embedding = np.array(query_embedding)
             
@@ -123,4 +130,5 @@ class FAISSVectorStore:
     
     def get_index_size(self) -> int:
         """Get number of vectors in index."""
+        self._lazy_load()
         return self.index.ntotal if self.index else 0

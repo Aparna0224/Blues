@@ -33,7 +33,7 @@ export default function PapersTable({ papers }: Props) {
           <tbody>
             {papers.map((p, i) => (
               <tr
-                key={p.paper_id}
+                key={p.paper_id || `paper-${i}`}
                 style={{ borderTop: '1px solid rgba(255,255,255,0.05)', transition: 'background 0.1s' }}
                 onMouseEnter={e => (e.currentTarget.style.background = 'rgba(255,255,255,0.03)')}
                 onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}

@@ -63,12 +63,11 @@ async def lifespan(app: FastAPI):
         from src.retrieval.bm25_index import get_bm25_index
         bm25 = get_bm25_index()
         if not bm25._is_built:
-            print("   ⏳ Building BM25 index from MongoDB (this may take a moment)...")
-            bm25.build_from_mongo()
-        doc_count = len(bm25._chunks) if bm25._chunks else 0
-        print(f"   ✓ BM25 index ready ({doc_count} documents)")
+            print("   ⏳ Building BM25 index from MongoDB in background thread...")
+            import threading
+            threading.Thread(target=bm25.build_from_mongo, daemon=True).start()
     except Exception as e:
-        print(f"   ✗ BM25 load failed (non-fatal, will build on first query): {e}")
+        print(f"   ✗ BM25 load start failed: {e}")
 
     print("🚀 Startup complete.")
     yield
@@ -228,14 +227,7 @@ class QueryHistoryItem(BaseModel):
 async def run_query(req: QueryRequest):
     """Run the full agentic RAG pipeline and return structured JSON."""
     import time as _time
-
-    from src.llm.factory import get_llm
-    from src.agents.planner import PlannerAgent
-    from src.agents.verification import VerificationAgent
-    from src.generation.generator import AnswerGenerator
-    from src.retrieval.retriever import Retriever
     from src.trace.tracer import ExecutionTracer
-    from src.generation.summarizer import PipelineSummarizer
 
     t_start = _time.perf_counter()
     warnings: list[str] = []
@@ -261,172 +253,73 @@ async def run_query(req: QueryRequest):
         selected_project = mongo.ensure_default_project(user_id=user_id)
     project_id = selected_project.get("project_id")
 
-    # ── Step 1: LLM + Planner ────────────────────────────────────
+    # ── Step 1: LangGraph Execution ────────────────────────────────
+    from src.orchestration.graph import build_research_graph
+    
+    app_graph = build_research_graph()
+    initial_state = {
+        "query": req.query,
+        "sub_queries": [],
+        "search_queries": [],
+        "retrieved_chunks": [],
+        "reranked_chunks": [],
+        "evidence_map": {},
+        "answer": "",
+        "verification": {},
+        "needs_expansion": False,
+        "iteration_count": 0,
+        "final_answer": ""
+    }
+
     try:
-        llm = get_llm()
+        final_state = await app_graph.ainvoke(initial_state)
     except Exception as e:
-        raise HTTPException(status_code=503, detail=f"LLM init failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Pipeline execution failed: {e}")
 
-    planner = PlannerAgent(llm)
+    # Extract Agentic RAG state variables (restored full pipeline)
+    sub_questions = final_state.get("sub_queries", [])
+    search_queries = final_state.get("search_queries", [req.query])
+    chunks = final_state.get("reranked_chunks", [])
 
+    # answer is now a string from AnswerGenerator.generate_grouped_answer
+    grouped_answer = final_state.get("answer", "")
+    if not isinstance(grouped_answer, str):
+        grouped_answer = str(grouped_answer)
+
+    verification_result = final_state.get("verification", {})
+    summary_text = final_state.get("final_answer")  # From PipelineSummarizer
+
+    # analysis_data is stored in evidence_map by generate_node
+    evidence_map = final_state.get("evidence_map", {})
+    analysis_data = evidence_map.get("analysis_data", {})
+
+    # Collect warnings safely
+    if isinstance(verification_result, dict):
+        warnings.extend(verification_result.get("penalties", verification_result.get("warnings", [])))
+    
+    # Optional: Fill tracer for existing UI expectation
     try:
-        t0 = _time.perf_counter()
-        plan = planner.plan(req.query, req.user_level or "auto")
-        planning_ms = round((_time.perf_counter() - t0) * 1000, 1)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Planning failed: {e}")
-
-    if not plan:
-        raise HTTPException(status_code=500, detail="Planner returned empty plan")
-
-    sub_questions = plan.get("sub_questions", [])
-    search_queries = plan.get("search_queries", [req.query])
-
-    tracer.record_planning(
-        input_question=req.query,
-        sub_questions=sub_questions,
-        search_queries=search_queries,
-        llm_raw_output=plan.get("_raw_output", ""),
-        latency_ms=planning_ms,
-    )
-
-    # Scale top_k for agentic queries: each sub-question needs its own evidence
-    effective_top_k = max(req.num_documents, len(sub_questions) * 5, 15)
-
-    # ── Step 2: Retrieval ────────────────────────────────────────
-    chunks = []
-    try:
-        if mode == "dynamic":
-            from src.retrieval.dynamic_retriever import DynamicRetriever
-
-            dynamic_retriever = DynamicRetriever(
-                use_evidence=True,
-                papers_per_query=5,
-                source=req.paper_source,
-            )
-            chunks = dynamic_retriever.dynamic_retrieve(
-                search_queries=search_queries,
-                main_query=req.query,
-                top_k=effective_top_k,
-                metadata_filters=req.filters,
-            )
-        else:
-            # Cached mode: use hybrid retrieval if enabled
-            if Config.HYBRID_RETRIEVAL_ENABLED:
-                from src.retrieval.hybrid_retriever import HybridRetriever
-
-                hybrid_retriever = HybridRetriever(use_evidence=True)
-                chunks = hybrid_retriever.multi_retrieve(
-                    search_queries,
-                    top_k_per_query=max(5, len(sub_questions) * 3),
-                    max_total=effective_top_k,
-                    metadata_filters=req.filters,
-                )
-            else:
-                retriever = Retriever(use_evidence=True)
-                chunks = retriever.multi_retrieve(
-                    search_queries,
-                    top_k_per_query=max(5, len(sub_questions) * 3),
-                    max_total=effective_top_k,
-                    metadata_filters=req.filters,
-                )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Retrieval failed: {e}")
-
-    if not chunks:
-        raise HTTPException(status_code=404, detail="No relevant chunks found for any search query.")
-
-    unique_paper_ids = {c.get("paper_id") for c in chunks if c.get("paper_id")}
-    if len(unique_paper_ids) < Config.MIN_UNIQUE_PAPERS_FOR_CLAIMS:
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                "Insufficient source diversity for claim generation: "
-                f"found {len(unique_paper_ids)} unique paper(s), "
-                f"requires at least {Config.MIN_UNIQUE_PAPERS_FOR_CLAIMS}. "
-                "Please broaden the query, increase documents, or switch retrieval mode."
-            ),
+        tracer.record_planning(
+            input_question=req.query,
+            sub_questions=sub_questions,
+            search_queries=search_queries,
+            llm_raw_output=json.dumps({"sub_questions": sub_questions, "search_queries": search_queries}),
+            latency_ms=0,
         )
-
-    # Build per-query retrieval trace
-    per_query_trace = []
-    for sq in search_queries:
-        matching = [
-            c for c in chunks
-            if (c.get("matched_query") == sq) or (c.get("search_query") == sq)
-        ]
-        per_query_trace.append(
-            {
-                "search_query": sq,
-                "top_k": req.num_documents,
-                "retrieved_chunk_ids": [c.get("chunk_id", "") for c in matching[:5]],
-                "similarity_scores": [c.get("similarity_score", 0) for c in matching[:5]],
-            }
+        tracer.record_evidence_selection(
+            claims_used=[
+                {
+                    "chunk_id": c.get("chunk_id", ""),
+                    "claim": c.get("evidence_sentence", c.get("text", "")[:200]),
+                    "similarity_score": c.get("similarity_score", 0),
+                    "paper_id": c.get("paper_id", "")
+                } for c in chunks
+            ]
         )
-    tracer.record_retrieval(
-        per_query=per_query_trace,
-        total_chunks_before_merge=len(chunks),
-        unique_chunks_after_merge=len({c.get("chunk_id", i) for i, c in enumerate(chunks)}),
-    )
-
-    # ── Step 3: Grouped answer ───────────────────────────────────
-    try:
-        generator = AnswerGenerator()
-        grouped_answer = generator.generate_grouped_answer(plan, chunks)
-        analysis_data = generator.get_last_analysis() if hasattr(generator, "get_last_analysis") else {}
+        if verification_result:
+            tracer.record_verification(verification_result)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Answer generation failed: {e}")
-
-    tracer.record_evidence_selection(
-        claims_used=[
-            {
-                "chunk_id": c.get("chunk_id", ""),
-                "claim": c.get("evidence_sentence", c.get("text", "")[:200]),
-                "similarity_score": c.get("similarity_score", 0),
-                "paper_id": c.get("paper_id", ""),
-                "sub_question": "",
-            }
-            for c in chunks
-        ]
-    )
-
-    # ── Step 4: Verification ─────────────────────────────────────
-    verification_result = {}
-    verification_output = ""
-    try:
-        verifier = VerificationAgent()
-        verification_input = verifier.build_verification_input(req.query, plan, chunks)
-        verification_result = verifier.verify(verification_input)
-        verification_output = verifier.format_verification_output(verification_result)
-    except Exception as e:
-        warnings.append(f"Verification failed: {e}")
-        verification_result = {}
-
-    if verification_result:
-        tracer.record_verification(verification_result)
-        audit = verification_result.get("audit", {})
-        tracer.record_filtering(
-            total_claims_received=audit.get("total_claims_received", 0),
-            after_deduplication=audit.get("claims_after_dedup", 0),
-            after_relevance_filter=audit.get("claims_after_relevance_filter", 0),
-            above_similarity_threshold=audit.get("claims_above_similarity_threshold", 0),
-            claims_rejected=audit.get("claims_rejected", 0),
-        )
-
-    # ── Step 5: LLM Summary (optional) ───────────────────────────
-    summary_text: Optional[str] = None
-    if req.include_summary:
-        try:
-            summarizer = PipelineSummarizer(llm)
-            summary_text = summarizer.summarize(
-                grouped_answer=grouped_answer,
-                verification_output=verification_output,
-                verification_result=verification_result,
-                analysis_data=analysis_data,
-                query=req.query,
-            )
-        except Exception as e:
-            warnings.append(f"Summary generation failed: {e}")
+        pass
 
     # ── Collect unique papers (look up metadata from MongoDB) ────
     seen_paper_ids: set = set()
@@ -510,10 +403,10 @@ async def run_query(req: QueryRequest):
         mode=mode,
         status="success",
         planning={
-            "main_question": plan.get("main_question", req.query),
+            "main_question": req.query,
             "sub_questions": sub_questions,
             "search_queries": search_queries,
-            "latency_ms": planning_ms,
+            "latency_ms": 0,
         },
         grouped_answer=grouped_answer,
         chunks_used=len(chunks),

@@ -1,5 +1,8 @@
-"""Dynamic Retriever - Fetches papers on-the-fly with abstract relevance filtering."""
+# FILE: src/retrieval/dynamic_retriever.py
+"""Dynamic Retriever - Fetches papers on-the-fly with abstract relevance filtering and optional web crawl fallback."""
 
+import asyncio
+import hashlib
 import numpy as np
 from typing import List, Dict, Any, Optional
 from src.embeddings.embedder import get_shared_embedder
@@ -8,6 +11,7 @@ from src.ingestion.loader import PaperIngestor
 from src.ingestion.fulltext import FullTextFetcher
 from src.chunking.processor import TextChunker
 from src.config import Config
+from src.retrieval.web_crawler import AcademicWebCrawler
 
 
 class DynamicRetriever:
@@ -24,131 +28,142 @@ class DynamicRetriever:
         5. Chunk full text (or abstract as fallback)
         6. Embed chunks & similarity search
         7. Return top-k with evidence
+        
+    Fallback:
+        - If API chunks < threshold, activate Crawl4AI web fallback.
     """
     
-    # Minimum cosine similarity between abstract embedding and query
     ABSTRACT_RELEVANCE_THRESHOLD = Config.DYNAMIC_ABSTRACT_MIN_SIMILARITY
     
     def __init__(self, use_evidence: bool = True, papers_per_query: int = 5, source: str | None = None):
-        """
-        Initialize DynamicRetriever.
-        
-        Args:
-            use_evidence: Enable sentence-level evidence extraction
-            papers_per_query: Number of papers to fetch per search query
-            source: Paper source (openalex, semantic_scholar, arxiv, both, all)
-        """
         self.embedder = get_shared_embedder()
         self.mongo = get_mongo_client()
         self.ingestor = PaperIngestor(source=source or Config.DEFAULT_PAPER_SOURCE)
         self.fulltext_fetcher = FullTextFetcher()
         self.chunker = TextChunker()
+        self.web_crawler = AcademicWebCrawler()
         self.use_evidence = use_evidence
         self.papers_per_query = papers_per_query
         self._evidence_extractor = None
     
     @property
     def evidence_extractor(self):
-        """Lazy load evidence extractor only when needed."""
         if self._evidence_extractor is None and self.use_evidence:
             from src.evidence.extractor import EvidenceExtractor
             self._evidence_extractor = EvidenceExtractor()
         return self._evidence_extractor
     
-    def dynamic_retrieve(
-        self,
-        search_queries: List[str],
-        main_query: str,
-        top_k: int = 10,
-        metadata_filters: Dict[str, Any] | None = None,
-    ) -> List[Dict[str, Any]]:
-        """
-        Two-stage dynamic retrieval:
+    async def retrieve(self, search_queries: List[str], use_web_fallback: bool = True, **kwargs) -> List[Dict[str, Any]]:
+        print(f"\n🌐 DYNAMIC RETRIEVAL MODE (Parallel)")
         
-        Stage A: Fetch abstracts → score relevance → filter
-        Stage B: Fetch full text for relevant papers → chunk → embed → retrieve
+        main_query = kwargs.get("main_query", search_queries[0] if search_queries else "")
+        metadata_filters = kwargs.get("metadata_filters")
+        top_k = kwargs.get("top_k", 10)
         
-        Args:
-            search_queries: List of search queries from PlannerAgent
-            main_query: Original user question
-            top_k: Number of top chunks to return
+        # 1. Fetch from standard APIs parallel
+        api_chunks = await self._fetch_from_apis_parallel(search_queries, main_query)
+        
+        # 2. Web fallback if chunks are scarce
+        threshold = getattr(Config, "MIN_CHUNKS_THRESHOLD", 8)
+        if use_web_fallback and getattr(Config, "WEB_CRAWL_ENABLED", True) and len(api_chunks) < threshold:
+            print(f"   ⚠️ API Chunks ({len(api_chunks)}) < Threshold ({threshold}). Activating web fallback...")
+            web_pages = await asyncio.gather(*[
+                self.web_crawler.search_and_crawl(q, n=3)
+                for q in search_queries[:3]  # Cap at 3 to control latency
+            ])
+            web_pages_flat = [p for sublist in web_pages for p in sublist]
             
-        Returns:
-            List of relevant chunks with metadata and evidence
-        """
-        print(f"\n🌐 DYNAMIC RETRIEVAL MODE (two-stage)")
-        print(f"   Fetching papers for {len(search_queries)} search queries...")
-        
-        # Connect to MongoDB
+            web_chunks = await self._process_web_pages(web_pages_flat, search_queries)
+            all_chunks = api_chunks + web_chunks
+        else:
+            all_chunks = api_chunks
+
+        if not all_chunks:
+            return []
+
+        # 3. Final embed, score, and filter using existing pipeline
+        return await self._embed_score_and_filter(all_chunks, search_queries, main_query, top_k, metadata_filters)
+
+    async def _process_web_pages(self, pages: List[dict], queries: List[str]) -> List[dict]:
+        """Convert crawled web pages into chunks using the existing TextChunker."""
+        chunks = []
+        for page in pages:
+            paper_id = hashlib.md5(page["url"].encode()).hexdigest()[:16]
+            raw_chunks = self.chunker.chunk(page["content"])
+            for i, c in enumerate(raw_chunks):
+                chunks.append({
+                    "chunk_id": f"web_{paper_id}_{i}",
+                    "paper_id": paper_id,
+                    "text": c,
+                    "title": page.get("title", page["url"]),
+                    "paper_title": page.get("title", page["url"]),
+                    "source": "web_crawl",
+                    "url": page["url"],
+                    "section": "full_text",
+                    "year": None,
+                    "doi": None,
+                    "authors": [],
+                    "metadata": {}
+                })
+                
+        if chunks:
+            # CPU-bound embeddings
+            texts = [c["text"] for c in chunks]
+            embeddings = await asyncio.to_thread(self.embedder.embed_batch, texts)
+            for c, emb in zip(chunks, embeddings):
+                c["embedding"] = emb.tolist() if hasattr(emb, "tolist") else emb
+                
+        return chunks
+
+    async def _fetch_from_apis_parallel(self, search_queries: List[str], main_query: str) -> List[Dict[str, Any]]:
         self.mongo.connect()
         papers_collection = self.mongo.get_papers_collection()
         chunks_collection = self.mongo.get_chunks_collection()
         
-        # ──────────────────────────────────────────────────────────
-        # STAGE A: Fetch abstracts & filter by relevance
-        # ──────────────────────────────────────────────────────────
         print(f"\n📋 STAGE A: Abstract Relevance Filtering")
         
-        # Step 1: Fetch papers for each search query
-        all_papers = []
-        for query in search_queries:
-            print(f"   → Fetching papers for: {query[:60]}...")
+        # Parallel ingestion
+        async def fetch_q(q):
             try:
-                papers = self.ingestor.fetch_papers(query, max_results=self.papers_per_query)
-                if papers:
-                    all_papers.extend(papers)
-                    print(f"     ✓ Found {len(papers)} papers")
+                return await asyncio.to_thread(self.ingestor.fetch_papers, q, max_results=self.papers_per_query)
             except Exception as e:
-                print(f"     ⚠ Error fetching: {e}")
-                continue
+                print(f"     ⚠ Error fetching {q}: {e}")
+                return []
+                
+        results = await asyncio.gather(*[fetch_q(q) for q in search_queries])
+        all_papers = [p for sublist in results if sublist for p in sublist]
         
         if not all_papers:
-            print("   ❌ No papers found from APIs")
             return []
-        
-        # Step 2: Deduplicate
+
         unique_papers = {}
-        for paper in all_papers:
-            pid = paper.get("paper_id")
+        for p in all_papers:
+            pid = p.get("paper_id")
             if pid and pid not in unique_papers:
-                unique_papers[pid] = paper
-        
-        print(f"   ✓ Total unique papers: {len(unique_papers)}")
-        
-        # Step 3: Check MongoDB for existing papers (with full text already stored)
+                unique_papers[pid] = p
+
         existing_paper_ids = []
         new_paper_ids = []
-        
         for pid, paper in unique_papers.items():
-            existing = papers_collection.find_one({"paper_id": pid})
+            existing = await asyncio.to_thread(papers_collection.find_one, {"paper_id": pid})
             if existing:
                 existing_paper_ids.append(pid)
-                # If existing record has full_text, update our in-memory copy
                 if existing.get("full_text"):
                     unique_papers[pid]["full_text"] = existing["full_text"]
             else:
                 new_paper_ids.append(pid)
-        
-        print(f"     → Already in DB: {len(existing_paper_ids)} (reusing)")
-        print(f"     → New papers: {len(new_paper_ids)}")
-        
-        # Step 4: Score abstract relevance using HYBRID scoring (BM25 + cosine)
-        print(f"   🔍 Scoring abstract relevance (hybrid BM25 + cosine)...")
-        query_emb = self.embedder.embed_text(main_query)
-        search_embs = [self.embedder.embed_text(sq) for sq in search_queries]
-        all_query_embs = search_embs + [query_emb]
-        
-        # Build a temporary BM25 index over abstracts for keyword matching
+
+        # Hybrid Abstract scoring
         from rank_bm25 import BM25Okapi
         import re as _re
-        
         def _bm25_tokenize(text: str) -> list:
-            """Tokenize text the same way BM25Index does."""
-            return [
-                w for w in _re.findall(r'[a-z0-9]+', (text or "").lower())
-                if len(w) > 1
-            ]
-        
+            return [w for w in _re.findall(r'[a-z0-9]+', (text or "").lower()) if len(w) > 1]
+            
+        def embed_q(q): return self.embedder.embed_text(q)
+        query_emb = await asyncio.to_thread(embed_q, main_query)
+        search_embs = await asyncio.to_thread(lambda: [self.embedder.embed_text(sq) for sq in search_queries])
+        all_query_embs = search_embs + [query_emb]
+
         abstract_texts = []
         abstract_pids = []
         for pid, paper in unique_papers.items():
@@ -156,584 +171,175 @@ class DynamicRetriever:
             if abstract:
                 abstract_texts.append(abstract)
                 abstract_pids.append(pid)
-        
-        # Build BM25 over abstracts
+
         tokenized_abstracts = [_bm25_tokenize(a) for a in abstract_texts]
-        bm25_abstract = BM25Okapi(tokenized_abstracts) if tokenized_abstracts else None
+        bm25_abstract = await asyncio.to_thread(BM25Okapi, tokenized_abstracts) if tokenized_abstracts else None
         
-        # Compute BM25 scores for all queries against all abstracts
-        bm25_abstract_scores = {}  # pid -> max bm25 score (normalized 0-1)
+        bm25_abstract_scores = {}
         if bm25_abstract and abstract_pids:
             for sq in search_queries + [main_query]:
-                tokenized_query = _bm25_tokenize(sq)
-                raw_scores = bm25_abstract.get_scores(tokenized_query)
+                raw_scores = bm25_abstract.get_scores(_bm25_tokenize(sq))
                 max_raw = max(raw_scores) + 1e-9
                 for idx, pid in enumerate(abstract_pids):
                     normalized = float(raw_scores[idx]) / max_raw
-                    bm25_abstract_scores[pid] = max(
-                        bm25_abstract_scores.get(pid, 0.0), normalized
-                    )
-        
+                    bm25_abstract_scores[pid] = max(bm25_abstract_scores.get(pid, 0.0), normalized)
+
         relevant_papers = []
-        irrelevant_count = 0
-        
-        bm25_weight = Config.ABSTRACT_HYBRID_BM25_WEIGHT
-        semantic_weight = Config.ABSTRACT_HYBRID_SEMANTIC_WEIGHT
+        bm25_weight = getattr(Config, "ABSTRACT_HYBRID_BM25_WEIGHT", 0.4)
+        semantic_weight = getattr(Config, "ABSTRACT_HYBRID_SEMANTIC_WEIGHT", 0.6)
         
         for pid, paper in unique_papers.items():
             abstract = paper.get("abstract", "")
             if not abstract:
-                irrelevant_count += 1
                 continue
-            
-            abstract_emb = self.embedder.embed_text(abstract)
+            abstract_emb = await asyncio.to_thread(self.embedder.embed_text, abstract)
             cosine_score = max(float(np.dot(abstract_emb, qe)) for qe in all_query_embs)
             bm25_score = bm25_abstract_scores.get(pid, 0.0)
             
-            # Hybrid abstract score
             hybrid_abstract_score = (semantic_weight * cosine_score) + (bm25_weight * bm25_score)
             paper["_abstract_relevance"] = hybrid_abstract_score
-            paper["_abstract_cosine"] = cosine_score
-            paper["_abstract_bm25"] = bm25_score
             
             if hybrid_abstract_score >= self.ABSTRACT_RELEVANCE_THRESHOLD:
                 relevant_papers.append(paper)
-            else:
-                irrelevant_count += 1
-        
+                
         relevant_papers.sort(key=lambda p: p.get("_abstract_relevance", 0), reverse=True)
-        
-        print(f"   ✓ Relevant papers: {len(relevant_papers)} (threshold={self.ABSTRACT_RELEVANCE_THRESHOLD})")
-        print(f"   ✗ Filtered out: {irrelevant_count} irrelevant papers")
-        
+
         if not relevant_papers:
-            print("   ❌ No papers passed the relevance filter")
             return []
+
+        # Stage B
+        print(f"\n📖 STAGE B: Full-Text Fetch & Chunking")
         
-        for i, p in enumerate(relevant_papers[:5], 1):
-            score = p.get("_abstract_relevance", 0)
-            has_url = "📄" if p.get("full_text_url") or p.get("best_oa_pdf_url") else "  "
-            print(f"     {i}. [{score:.3f}] {has_url} {p.get('title', 'Unknown')[:70]}")
+        async def fetch_full(p):
+            if not p.get("full_text"):
+                has_oa = p.get("full_text_url") or p.get("best_oa_pdf_url") or p.get("oa_url")
+                if has_oa:
+                    ft = await asyncio.to_thread(self.fulltext_fetcher.fetch_full_text, p)
+                    if ft:
+                        p["full_text"] = ft
         
-        # ──────────────────────────────────────────────────────────
-        # STAGE B: Full-text fetch, chunk, embed, retrieve
-        # ──────────────────────────────────────────────────────────
-        print(f"\n📖 STAGE B: Full-Text Fetch & Retrieval")
-        
-        # Step 5: Fetch full text for relevant papers that don't already have it
-        fulltext_success = 0
-        fulltext_failed = 0
-        abstract_only = 0
-        
-        for paper in relevant_papers:
-            # Skip if we already have full text
-            if paper.get("full_text"):
-                fulltext_success += 1
-                continue
-            
-            has_oa_url = paper.get("full_text_url") or paper.get("best_oa_pdf_url") or paper.get("oa_url")
-            if has_oa_url:
-                print(f"   📥 Downloading: {paper.get('title', 'Unknown')[:55]}...")
-                full_text = self.fulltext_fetcher.fetch_full_text(paper)
-                if full_text:
-                    paper["full_text"] = full_text
-                    fulltext_success += 1
-                else:
-                    fulltext_failed += 1
-                    abstract_only += 1
-            else:
-                abstract_only += 1
-        
-        print(f"   ✓ Full text obtained: {fulltext_success} papers")
-        if fulltext_failed:
-            print(f"   ⚠ Full text failed: {fulltext_failed} papers (using abstract)")
-        if abstract_only:
-            print(f"   📝 Abstract only: {abstract_only} papers")
-        
-        # Step 6: Get existing chunks from MongoDB for DB papers that already have chunks
-        existing_chunks = []
+        await asyncio.gather(*[fetch_full(p) for p in relevant_papers])
+
         relevant_pids = {p["paper_id"] for p in relevant_papers}
-        
-        # Reuse papers that are already in DB AND have chunks stored
-        # Skip reuse only if we just downloaded new full_text for a paper that
-        # previously only had abstract chunks
         reuse_ids = []
         for pid in existing_paper_ids:
-            if pid not in relevant_pids:
-                continue
-            # Check if paper has existing chunks in DB
-            has_chunks = chunks_collection.count_documents({"paper_id": pid}, limit=1) > 0
-            has_new_fulltext = unique_papers.get(pid, {}).get("full_text") and not chunks_collection.find_one({"paper_id": pid, "section": "body"})
-            if has_chunks and not has_new_fulltext:
-                reuse_ids.append(pid)
-        
+            if pid in relevant_pids:
+                has_chunks = await asyncio.to_thread(chunks_collection.count_documents, {"paper_id": pid}, limit=1)
+                has_new_fulltext = unique_papers.get(pid, {}).get("full_text") and not await asyncio.to_thread(chunks_collection.find_one, {"paper_id": pid, "section": "body"})
+                if has_chunks and not has_new_fulltext:
+                    reuse_ids.append(pid)
+
+        existing_chunks = []
         if reuse_ids:
-            existing_chunks = list(chunks_collection.find({"paper_id": {"$in": reuse_ids}}))
-            # Re-label old chunks that still have section="body"
-            existing_chunks = self._relabel_body_chunks(existing_chunks, chunks_collection)
-            print(f"   ✓ Retrieved {len(existing_chunks)} existing chunks from DB")
-        
-        # Step 7: Chunk relevant papers (new or those with fresh full text)
+            cursor = chunks_collection.find({"paper_id": {"$in": reuse_ids}})
+            existing_chunks = await asyncio.to_thread(lambda: list(cursor))
+
         papers_to_chunk = [p for p in relevant_papers if p.get("paper_id") not in reuse_ids]
         new_chunks = []
-        
         if papers_to_chunk:
-            print(f"   📝 Chunking {len(papers_to_chunk)} papers...")
-            new_chunks = self.chunker.create_chunks(papers_to_chunk)
-            print(f"   ✓ Created {len(new_chunks)} new chunks")
-            
-            # Store in MongoDB
-            for paper in papers_to_chunk:
-                try:
-                    store_paper = {k: v for k, v in paper.items() if not k.startswith("_")}
-                    papers_collection.update_one(
-                        {"paper_id": store_paper["paper_id"]},
-                        {"$set": store_paper},
-                        upsert=True
-                    )
-                except Exception:
-                    pass
-            
-            print(f"   💾 Stored papers and chunks in MongoDB")
-        
-        # Step 8: Combine all chunks and build embeddings
-        # For existing chunks, reuse stored embeddings; for new chunks, compute them
+            new_chunks = await asyncio.to_thread(self.chunker.create_chunks, papers_to_chunk)
+            # Store chunks asynchronously
+            async def store_p(p):
+                store_paper = {k: v for k, v in p.items() if not k.startswith("_")}
+                await asyncio.to_thread(papers_collection.update_one, {"paper_id": store_paper["paper_id"]}, {"$set": store_paper}, upsert=True)
+            await asyncio.gather(*[store_p(p) for p in papers_to_chunk])
+
         all_chunks = []
-        all_embeddings = []
-        
-        # Process existing chunks — reuse embeddings from MongoDB
-        existing_with_emb = 0
-        existing_need_emb = []
         for chunk in existing_chunks:
             paper = unique_papers.get(chunk.get("paper_id"), {})
-            entry = {
-                "chunk_id": chunk.get("chunk_id"),
-                "text": chunk.get("text", ""),
-                "paper_id": chunk.get("paper_id"),
-                "paper_title": paper.get("title", chunk.get("paper_title", "Unknown")),
-                "paper_year": paper.get("year", chunk.get("paper_year", "N/A")),
-                "section": chunk.get("section", "abstract"),
-                "source": "existing",
-                "metadata": chunk.get("metadata"),
-            }
+            entry = {**chunk, "paper_title": paper.get("title", "Unknown"), "source": "existing"}
             all_chunks.append(entry)
             
-            # Reuse stored embedding if available
-            stored_emb = chunk.get("embedding")
-            if stored_emb is not None and len(stored_emb) == Config.EMBEDDING_DIMENSION:
-                all_embeddings.append(np.array(stored_emb, dtype=np.float32))
-                existing_with_emb += 1
-            else:
-                existing_need_emb.append(len(all_chunks) - 1)  # index for later
-                all_embeddings.append(None)  # placeholder
-        
-        if existing_with_emb:
-            print(f"   ✓ Reused {existing_with_emb} cached embeddings from DB")
-        
-        # Process new chunks
         for chunk in new_chunks:
             paper = unique_papers.get(chunk.get("paper_id"), {})
-            all_chunks.append({
-                "chunk_id": chunk.get("chunk_id"),
-                "text": chunk.get("text", ""),
-                "paper_id": chunk.get("paper_id"),
-                "paper_title": paper.get("title", "Unknown"),
-                "paper_year": paper.get("year", "N/A"),
-                "section": chunk.get("section", "abstract"),
-                "source": "new",
-                "metadata": chunk.get("metadata"),
-            })
-            all_embeddings.append(None)  # need to compute
-        
+            entry = {**chunk, "paper_title": paper.get("title", "Unknown"), "source": "new"}
+            # Need to embed new ones
+            all_chunks.append(entry)
+
+        # Batch embed anything missing embedding
+        needs_emb = [i for i, c in enumerate(all_chunks) if not c.get("embedding")]
+        if needs_emb:
+            texts = [all_chunks[i]["text"] for i in needs_emb]
+            embs = await asyncio.to_thread(self.embedder.embed_batch, texts)
+            for i, emb in zip(needs_emb, embs):
+                all_chunks[i]["embedding"] = emb.tolist() if hasattr(emb, "tolist") else emb
+
+        return all_chunks
+
+    async def _embed_score_and_filter(self, all_chunks: List[dict], search_queries: List[str], main_query: str, top_k: int, metadata_filters: dict) -> List[dict]:
+        """Hybrid sort, evidence extract."""
+        print(f"   🔍 Hybrid search on {len(all_chunks)} chunks...")
         if not all_chunks:
-            print("   ❌ No chunks available")
             return []
+
+        search_embs = await asyncio.to_thread(lambda: [self.embedder.embed_text(q) for q in search_queries])
+        query_emb = await asyncio.to_thread(self.embedder.embed_text, main_query)
+        all_query_embs = search_embs + [query_emb]
         
-        print(f"   ✓ Total chunks to search: {len(all_chunks)}")
-        
-        # Step 9: Embed only chunks that don't have cached embeddings
-        indices_needing_emb = [i for i, e in enumerate(all_embeddings) if e is None]
-        
-        if indices_needing_emb:
-            texts_to_embed = [all_chunks[i]["text"] for i in indices_needing_emb]
-            print(f"   🧠 Embedding {len(texts_to_embed)} new chunks (skipping {len(all_chunks) - len(texts_to_embed)} cached)...")
-            new_embeddings = self.embedder.embed_batch(texts_to_embed)
+        # Parallel semantic loop
+        def score_sem(chunk):
+            chunk_emb = np.array(chunk.get("embedding", []), dtype=np.float32)
+            if chunk_emb.size == 0:
+                return {"score": 0.0, "query": main_query}
+            scores = [float(np.dot(chunk_emb, qe)) for qe in all_query_embs]
+            idx = np.argmax(scores)
+            return {"score": scores[idx], "query": search_queries[idx] if idx < len(search_queries) else main_query}
             
-            for idx_pos, chunk_idx in enumerate(indices_needing_emb):
-                all_embeddings[chunk_idx] = new_embeddings[idx_pos]
-            
-            # Store new chunk embeddings in MongoDB for future reuse
-            for idx_pos, chunk_idx in enumerate(indices_needing_emb):
-                chunk_data = all_chunks[chunk_idx]
-                embedding_list = new_embeddings[idx_pos].tolist()
-                try:
-                    # Look up the original MongoDB document to preserve all fields
-                    if chunk_idx < len(existing_chunks):
-                        original = existing_chunks[chunk_idx]
-                    else:
-                        new_idx = chunk_idx - len(existing_chunks)
-                        original = new_chunks[new_idx] if new_idx < len(new_chunks) else {}
-                    
-                    store_fields = {k: v for k, v in original.items() if k != "_id"}
-                    store_fields["embedding"] = embedding_list
-                    
-                    chunks_collection.update_one(
-                        {"chunk_id": chunk_data["chunk_id"]},
-                        {"$set": store_fields},
-                        upsert=True,
-                    )
-                except Exception:
-                    pass
-            
-            print(f"   💾 Stored embeddings in MongoDB for reuse")
-        else:
-            print(f"   ✓ All {len(all_chunks)} embeddings loaded from cache")
-        
-        chunk_embeddings = np.array(all_embeddings, dtype=np.float32)
-        print(f"   ✓ Ready with {len(chunk_embeddings)} embeddings")
-        
-        # Step 10: Hybrid search — BM25 + Cosine fused via RRF
-        print(f"   🔍 Hybrid search (BM25 + Cosine → RRF)...")
+        sem_results = await asyncio.to_thread(lambda: [score_sem(c) for c in all_chunks])
+        for i, res in enumerate(sem_results):
+            all_chunks[i]["similarity_score"] = res["score"]
+            all_chunks[i]["matched_query"] = res["query"]
 
         from src.retrieval.bm25_index import BM25Index
-        from src.retrieval.hybrid_retriever import HybridRetriever
-
-        # --- Semantic (cosine) scoring per-query ---
-        semantic_ranked: List[Dict[str, Any]] = []
-        chunk_scores = []
-        for i, chunk_emb in enumerate(chunk_embeddings):
-            max_score = 0
-            best_query = ""
-            for j, q_emb in enumerate(all_query_embs):
-                score = float(np.dot(chunk_emb, q_emb))
-                if score > max_score:
-                    max_score = score
-                    best_query = search_queries[j] if j < len(search_queries) else main_query
-            chunk_scores.append({"index": i, "score": max_score, "matched_query": best_query})
-
-        chunk_scores.sort(key=lambda x: x["score"], reverse=True)
-        for item in chunk_scores:
-            idx = item["index"]
-            chunk = all_chunks[idx]
-            paper_id = chunk.get("paper_id")
-            paper = unique_papers.get(paper_id, {})
-            metadata = chunk.get("metadata") or {
-                "title": chunk.get("paper_title") or paper.get("title", ""),
-                "year": chunk.get("paper_year") or paper.get("year", ""),
-                "section": chunk.get("section", "abstract"),
-                "summary": "",
-                "tags": [],
-                "category": "general",
-                "source": paper.get("source", ""),
-            }
-            semantic_ranked.append({
-                "chunk_id": chunk.get("chunk_id", f"dyn_{idx}"),
-                "text": chunk.get("text", ""),
-                "paper_id": paper_id,
-                "paper_title": chunk.get("paper_title") or paper.get("title", "Unknown"),
-                "paper_year": chunk.get("paper_year") or paper.get("year", "N/A"),
-                "paper_authors": paper.get("authors", []),
-                "paper_doi": paper.get("doi", ""),
-                "paper_full_text_url": paper.get("full_text_url", ""),
-                "has_full_text": bool(paper.get("full_text")),
-                "similarity_score": item["score"],
-                "section": chunk.get("section", "abstract"),
-                "matched_query": item["matched_query"],
-                "source": chunk.get("source", "unknown"),
-                "metadata": metadata,
-            })
-
-        # --- BM25 scoring ---
+        from src.retrieval.reranker import GlobalReranker
+        
         bm25_index = BM25Index()
-        bm25_index.build_from_chunks(all_chunks)
+        await asyncio.to_thread(bm25_index.build_from_chunks, all_chunks)
+        
+        merged_map = {}
+        k_val = getattr(Config, "RRF_K", 60)
+        
+        for q in search_queries + [main_query]:
+            bm25_res = await asyncio.to_thread(bm25_index.search, q, getattr(Config, "BM25_TOP_K", 50))
+            q_sem = [c for c in all_chunks if c.get("matched_query") == q]
+            fused = GlobalReranker.global_rerank(bm25_res, q_sem, [q])
+            for c in fused:
+                cid = c.get("chunk_id")
+                if not cid: continue
+                c["matched_query"] = q
+                if cid not in merged_map or c.get("rrf_score", 0) > merged_map[cid].get("rrf_score", 0):
+                    merged_map[cid] = c
 
-        # --- Per-query RRF fusion ---
-        merged_map: Dict[str, Dict[str, Any]] = {}
-        for query in search_queries:
-            # BM25 results for this query
-            bm25_results = bm25_index.search(query, top_k=Config.BM25_TOP_K)
-            # Semantic results matching this query
-            query_semantic = [c for c in semantic_ranked if c.get("matched_query") == query]
-            # Fuse
-            fused = HybridRetriever._rrf_fuse(bm25_results, query_semantic, k=Config.RRF_K)
-            for chunk in fused:
-                cid = chunk.get("chunk_id")
-                if not cid:
-                    continue
-                chunk["matched_query"] = query
-                if cid in merged_map:
-                    if chunk.get("rrf_score", 0) > merged_map[cid].get("rrf_score", 0):
-                        merged_map[cid] = chunk
-                else:
-                    merged_map[cid] = chunk
-
-        # Also do a fusion with main_query to catch anything missed
-        bm25_main = bm25_index.search(main_query, top_k=Config.BM25_TOP_K)
-        main_semantic = [c for c in semantic_ranked if c.get("matched_query") == main_query]
-        fused_main = HybridRetriever._rrf_fuse(bm25_main, main_semantic, k=Config.RRF_K)
-        for chunk in fused_main:
-            cid = chunk.get("chunk_id")
-            if not cid:
-                continue
-            if cid not in merged_map:
-                chunk["matched_query"] = main_query
-                merged_map[cid] = chunk
-
-        # Sort by RRF score and apply filters
         results = sorted(merged_map.values(), key=lambda x: x.get("rrf_score", 0), reverse=True)
 
-        # Apply metadata filters post-fusion
-        filtered_results = []
-        for result in results:
-            if metadata_filters and not self._passes_metadata_filters(metadata_filters, result):
-                continue
-            filtered_results.append(result)
+        if metadata_filters:
+            results = [r for r in results if self._passes_metadata_filters(metadata_filters, r)]
+            
+        results = results[:top_k]
 
-        # Apply soft precision filtering post-fusion
-        results = self._apply_soft_filtering(main_query, filtered_results)[:top_k]
-
-        body_chunks = sum(r.get("section") == "body" for r in results)
-        abstract_chunks = sum(r.get("section") == "abstract" for r in results)
-        print(f"   ✓ Found {len(results)} relevant chunks ({body_chunks} from full text, {abstract_chunks} from abstracts)")
-        
-        # Step 11: Extract sentence-level evidence
         if self.use_evidence and results:
-            print(f"   📌 Extracting sentence-level evidence...")
-            results = self._extract_evidence(main_query, results)
-
-        # Step 12: Extract structured paper facts (Phase 2)
-        if results:
-            from src.retrieval.paper_facts import extract_paper_facts
-            results = extract_paper_facts(results)
-            facts_count = sum(
-                1 for r in results
-                if any(r.get("paper_facts", {}).get(k) for k in ("datasets", "metrics", "model_names"))
-            )
-            print(f"   ✓ Extracted paper facts from {facts_count}/{len(results)} chunks")
+            def ext_ev(res): return [self._extract_evidence_single(main_query, r) for r in res]
+            results = await asyncio.to_thread(ext_ev, results)
 
         return results
-    
-    def _relabel_body_chunks(self, chunks: list, chunks_collection) -> list:
-        """Re-infer section for old chunks labeled 'body'."""
-        relabeled = []
-        relabel_count = 0
-        for chunk in chunks:
-            if chunk.get("section") not in ("body", None, ""):
-                relabeled.append(chunk)
-                continue
-            # Use keyword signals on the chunk text
-            text = chunk.get("text", "")
-            inferred = self._infer_section_from_text(text)
-            if inferred != "body":
-                chunk = dict(chunk)
-                chunk["section"] = inferred
-                if chunk.get("metadata"):
-                    chunk["metadata"]["section"] = inferred
-                # Update in MongoDB for future reuse
-                try:
-                    chunks_collection.update_one(
-                        {"chunk_id": chunk["chunk_id"]},
-                        {"$set": {"section": inferred, "metadata.section": inferred}}
-                    )
-                    relabel_count += 1
-                except Exception:
-                    pass
-            relabeled.append(chunk)
-        if relabel_count:
-            print(f"   ✓ Re-labeled {relabel_count} 'body' chunks with inferred sections")
-        return relabeled
-
-    @staticmethod
-    def _infer_section_from_text(text: str) -> str:
-        """Lightweight section inference using keyword signals."""
-        t = text.lower()
-        # Phase 6: dataset_description detection
-        if any(k in t for k in ["we use", "we collected", "the dataset",
-                                  "training set", "test set", "images from",
-                                  "annotated", "ground truth", "data augmentation",
-                                  "data collection", "samples were"]):
-            return "dataset_description"
-        if any(k in t for k in ["we propose", "this paper presents", "we introduce",
-                                  "in this work", "our approach", "the proposed"]):
-            return "methodology"
-        if any(k in t for k in ["accuracy", "f1 score", "precision", "recall",
-                                  "outperforms", "we achieve", "results show",
-                                  "evaluation on", "benchmark"]):
-            return "results"
-        if any(k in t for k in ["in conclusion", "future work", "we conclude",
-                                  "limitations", "this work demonstrates"]):
-            return "conclusion"
-        if any(k in t for k in ["we discuss", "this suggests", "implication",
-                                  "our analysis shows", "we observe that"]):
-            return "discussion"
-        if any(k in t for k in ["related work", "prior work", "previous studies",
-                                  "background", "in this section, we review"]):
-            return "related_work"
-        if any(k in t for k in ["introduction", "problem statement", "motivation",
-                                  "this paper is organized", "remainder of"]):
-            return "introduction"
-        return "body"
-
-    def _extract_evidence(self, query: str, chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """
-        Extract sentence-level evidence from chunks.
         
-        Args:
-            query: The user query
-            chunks: Retrieved chunks
-            
-        Returns:
-            Chunks enhanced with evidence_sentence and evidence_score
-        """
+    def _extract_evidence_single(self, query: str, chunk: dict) -> dict:
         if not self.evidence_extractor:
-            return chunks
-        
-        enhanced_chunks: List[Dict[str, Any]] = []
-        for chunk in chunks:
-            chunk_query = chunk.get("matched_query") or query
-            text = chunk.get("text", "")
-            evidence = self.evidence_extractor.select_best_sentence(chunk_query, text)
-            enhanced_chunks.append({
-                **chunk,
-                "evidence_sentence": evidence.get("best_sentence", ""),
-                "evidence_score": evidence.get("best_score", 0.0),
-                "evidence_below_threshold": evidence.get("below_threshold", False),
-            })
-
-        print(f"   ✓ Extracted evidence from {len(enhanced_chunks)} chunks")
-        return enhanced_chunks
-
-    def _apply_soft_filtering(
-        self,
-        query: str,
-        chunks: List[Dict[str, Any]],
-    ) -> List[Dict[str, Any]]:
-        """Apply soft, score-based precision filtering after RRF fusion."""
-        if not chunks:
-            return []
-
-        adjusted: List[Dict[str, Any]] = []
-        min_score = float(Config.MIN_SCORE_THRESHOLD)
-
-        for chunk in chunks:
-            base_score = float(chunk.get("rrf_score", 0.0) or 0.0)
-            score = base_score
-
-            text = chunk.get("text", "")
-            semantic_score = float(chunk.get("similarity_score", 0.0) or 0.0)
-
-            keyword_overlap = self._keyword_overlap(query, text)
-            if keyword_overlap < int(Config.KEYWORD_MIN_OVERLAP):
-                score *= float(Config.SOFT_FILTER_KEYWORD_PENALTY)
-
-            if not self._passes_domain_gate(query, text):
-                score *= float(Config.SOFT_FILTER_DOMAIN_PENALTY)
-
-            if semantic_score < float(Config.SOFT_FILTER_LOW_SEMANTIC_THRESHOLD):
-                score *= float(Config.SOFT_FILTER_LOW_SEMANTIC_PENALTY)
-
-            chunk["final_score"] = score
-            chunk["keyword_overlap"] = keyword_overlap
-
-            if score >= min_score:
-                adjusted.append(chunk)
-
-        adjusted.sort(key=lambda c: c.get("final_score", 0.0), reverse=True)
-        return adjusted
-
-    @staticmethod
-    def _keyword_overlap(query: str, text: str) -> int:
-        if not query or not text:
-            return 0
-        stop_words = {
-            "what", "how", "why", "when", "where", "which", "is", "are",
-            "does", "do", "can", "the", "a", "an", "in", "of", "and",
-            "or", "to", "for", "on", "with", "by", "from", "as", "at",
-            "about", "into", "be", "this", "that",
+            return chunk
+        evidence = self.evidence_extractor.select_best_sentence(chunk.get("matched_query", query), chunk.get("text", ""))
+        return {
+            **chunk,
+            "evidence_sentence": evidence.get("best_sentence", ""),
+            "evidence_score": evidence.get("best_score", 0.0)
         }
-        query_terms = {
-            w.strip(".,;:()[]{}\"'`).")
-            for w in query.lower().split()
-            if w and w not in stop_words and len(w) > 2
-        }
-        if not query_terms:
-            return 0
-        text_terms = {
-            w.strip(".,;:()[]{}\"'`).")
-            for w in text.lower().split()
-            if w and w not in stop_words and len(w) > 2
-        }
-        return len(query_terms.intersection(text_terms))
-
-    def _passes_keyword_filter(self, query: str, text: str, min_overlap: int | None = None) -> bool:
-        required_overlap = Config.KEYWORD_MIN_OVERLAP if min_overlap is None else int(min_overlap)
-        if required_overlap <= 0:
-            return True
-        return self._keyword_overlap(query, text) >= required_overlap
-
-    def _passes_domain_gate(self, query: str, text: str) -> bool:
-        if not Config.ENABLE_DOMAIN_KEYWORD_GATE or not Config.DOMAIN_KEYWORDS:
-            return True
-
-        query_terms = {
-            w.strip(".,;:()[]{}\"'`).").lower()
-            for w in query.split()
-            if w and len(w) > 2
-        }
-        domain_terms = set(Config.DOMAIN_KEYWORDS)
-        if query_terms.isdisjoint(domain_terms):
-            return True
-
-        text_terms = {
-            w.strip(".,;:()[]{}\"'`).").lower()
-            for w in text.split()
-            if w and len(w) > 2
-        }
-        overlap = len(domain_terms.intersection(text_terms))
-        return overlap >= Config.DOMAIN_KEYWORD_MIN_OVERLAP
 
     @staticmethod
     def _passes_metadata_filters(filters: Dict[str, Any] | None, chunk: Dict[str, Any]) -> bool:
         if not filters:
             return True
-
         metadata = chunk.get("metadata", {}) or {}
         for key, value in filters.items():
-            if key == "section":
-                section = metadata.get("section") or chunk.get("section")
-                if value and section != value:
-                    return False
-            elif key == "year":
-                year = metadata.get("year") or chunk.get("paper_year") or chunk.get("year")
-                if isinstance(value, dict):
-                    min_year = value.get("min")
-                    max_year = value.get("max")
-                    if min_year is not None and year and int(year) < int(min_year):
-                        return False
-                    if max_year is not None and year and int(year) > int(max_year):
-                        return False
-                elif value is not None and year and str(year) != str(value):
-                    return False
-            elif key == "tags":
-                tags = set(metadata.get("tags", []))
-                if isinstance(value, list):
-                    if tags.isdisjoint({str(v).lower() for v in value}):
-                        return False
-                elif value and str(value).lower() not in tags:
-                    return False
-            elif key == "category":
-                category = (metadata.get("category") or "").lower()
-                if value and category != str(value).lower():
-                    return False
-            elif key == "title_contains":
-                title = metadata.get("title") or chunk.get("paper_title", "")
-                if value and str(value).lower() not in title.lower():
-                    return False
-            elif key == "source":
-                source = metadata.get("source") or ""
-                if value and source != value:
-                    return False
-            else:
-                if metadata.get(key) != value:
+            if key == "source":
+                if metadata.get("source") != value and chunk.get("source") != value:
                     return False
         return True

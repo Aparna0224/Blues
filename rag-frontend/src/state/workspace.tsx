@@ -409,7 +409,40 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
   const loadQuery = async (queryId: string): Promise<StoredQuery | null> => {
     const baseQuery = findQuery(state.projects, queryId);
     if (!baseQuery) {
-      return null;
+      try {
+        const result = await getQueryResult(queryId);
+        if (!result) return null;
+        
+        const queryDoc = state.queryHistory.find(q => q.query_id === queryId) || {
+          query_id: queryId,
+          query_text: result.query || 'Loaded query',
+          result,
+          trace: null,
+          timestamp: new Date().toISOString(),
+        };
+        
+        setState(prev => {
+          const project = prev.projects.find(p => p.id === prev.currentProjectId);
+          const updatedProject = project ? {
+            ...project,
+            queries: [...project.queries, queryDoc],
+          } : project;
+          
+          return {
+            ...prev,
+            projects: updatedProject ? prev.projects.map(p => p.id === updatedProject.id ? updatedProject : p) : prev.projects,
+            currentQueryId: queryId,
+            currentResult: result,
+            queryHistory: prev.queryHistory.some(q => q.query_id === queryId) 
+              ? prev.queryHistory.map(q => q.query_id === queryId ? { ...q, result } : q)
+              : [...prev.queryHistory, queryDoc],
+          };
+        });
+        
+        return queryDoc;
+      } catch {
+        return null;
+      }
     }
 
     setState(prev => {
