@@ -24,7 +24,8 @@ export default function VerificationCard({ verification }: Props) {
   const meta = getMeta(label);
   const Icon = meta.Icon;
   const pct = Math.round(v.confidence_score * 100);
-  const conflicts = m.conflicts_detected ?? [];
+  const hasConflicts = m.conflicts_detected === true || (Array.isArray(m.conflicts_detected) && m.conflicts_detected.length > 0);
+  const conflictDetails = Array.isArray(m.conflicts_detected) ? m.conflicts_detected : [];
 
   return (
     <div className="animate-fade-in" style={{ borderRadius: 13, border: `1px solid ${meta.border}`, background: meta.bg, overflow: 'hidden' }}>
@@ -74,14 +75,18 @@ export default function VerificationCard({ verification }: Props) {
       )}
 
       {/* Conflicts */}
-      {conflicts.length > 0 && (
+      {hasConflicts && (
         <div style={{ marginInline: 20, marginBottom: 12, padding: '12px 14px', borderRadius: 10, border: '1px solid rgba(251,191,36,0.2)', background: 'rgba(251,191,36,0.07)', display: 'flex', alignItems: 'flex-start', gap: 10 }}>
           <AlertTriangle size={14} style={{ color: '#fbbf24', flexShrink: 0, marginTop: 2 }} />
           <div>
-            <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#fbbf24' }}>Conflicting evidence</p>
-            <ul style={{ margin: 0, paddingLeft: 14 }}>
-              {conflicts.map((d, i) => <li key={i} style={{ fontSize: 12, color: '#fde68a', marginBottom: 2 }}>{d}</li>)}
-            </ul>
+            <p style={{ margin: '0 0 6px', fontSize: 12, fontWeight: 600, color: '#fbbf24' }}>Conflicting evidence detected</p>
+            {conflictDetails.length > 0 ? (
+              <ul style={{ margin: 0, paddingLeft: 14 }}>
+                {conflictDetails.map((d, i) => <li key={i} style={{ fontSize: 12, color: '#fde68a', marginBottom: 2 }}>{d}</li>)}
+              </ul>
+            ) : (
+              <p style={{ margin: 0, fontSize: 12, color: '#fde68a' }}>Multiple sources contain conflicting claims. Review evidence carefully.</p>
+            )}
           </div>
         </div>
       )}

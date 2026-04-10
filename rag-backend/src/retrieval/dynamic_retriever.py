@@ -291,7 +291,7 @@ class DynamicRetriever:
             all_chunks[i]["matched_query"] = res["query"]
 
         from src.retrieval.bm25_index import BM25Index
-        from src.retrieval.hybrid_retriever import HybridRetriever
+        from src.retrieval.reranker import GlobalReranker
         
         bm25_index = BM25Index()
         await asyncio.to_thread(bm25_index.build_from_chunks, all_chunks)
@@ -302,7 +302,7 @@ class DynamicRetriever:
         for q in search_queries + [main_query]:
             bm25_res = await asyncio.to_thread(bm25_index.search, q, getattr(Config, "BM25_TOP_K", 50))
             q_sem = [c for c in all_chunks if c.get("matched_query") == q]
-            fused = await asyncio.to_thread(HybridRetriever._rrf_fuse, bm25_res, q_sem, k=k_val)
+            fused = GlobalReranker.global_rerank(bm25_res, q_sem, [q])
             for c in fused:
                 cid = c.get("chunk_id")
                 if not cid: continue

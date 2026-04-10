@@ -59,11 +59,33 @@ function formatDate(ts: string): string {
 }
 
 function extractConflictBlocks(groupedAnswer: string): string[] {
-  return groupedAnswer
-    .split('⚠️ Cross-Paper Conflict Analysis')
-    .slice(1)
-    .map(block => block.split('📊 Comparison Summary')[0]?.trim())
-    .filter(Boolean);
+  const conflictMarker = /⚠️\s*Cross-Paper\s*Conflict/;
+  const comparisonMarker = /📊\s*Comparison\s*Summary/;
+  
+  const blocks: string[] = [];
+  let start = 0;
+  
+  while (start < groupedAnswer.length) {
+    const conflictMatch = groupedAnswer.slice(start).search(conflictMarker);
+    if (conflictMatch === -1) break;
+    
+    const actualConflictStart = start + conflictMatch;
+    let end = groupedAnswer.length;
+    
+    const nextConflict = groupedAnswer.slice(actualConflictStart + 1).search(conflictMarker);
+    const comparisonMatch = groupedAnswer.slice(actualConflictStart).search(comparisonMarker);
+    
+    if (nextConflict !== -1) {
+      end = actualConflictStart + 1 + nextConflict;
+    } else if (comparisonMatch !== -1) {
+      end = actualConflictStart + comparisonMatch;
+    }
+    
+    blocks.push(groupedAnswer.slice(actualConflictStart, end).trim());
+    start = end;
+  }
+  
+  return blocks;
 }
 
 export const CurrentQueryView = memo(function CurrentQueryView({ result }: CurrentQueryViewProps) {

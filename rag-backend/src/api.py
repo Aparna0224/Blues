@@ -227,14 +227,7 @@ class QueryHistoryItem(BaseModel):
 async def run_query(req: QueryRequest):
     """Run the full agentic RAG pipeline and return structured JSON."""
     import time as _time
-
-    from src.llm.factory import get_llm
-    from src.agents.planner import PlannerAgent
-    from src.agents.verification import VerificationAgent
-    from src.generation.generator import AnswerGenerator
-    from src.retrieval.retriever import Retriever
     from src.trace.tracer import ExecutionTracer
-    from src.generation.summarizer import PipelineSummarizer
 
     t_start = _time.perf_counter()
     warnings: list[str] = []
@@ -266,16 +259,16 @@ async def run_query(req: QueryRequest):
     app_graph = build_research_graph()
     initial_state = {
         "query": req.query,
-        "user_level": req.user_level or "auto",
-        "plan": {},
-        "chunks": [],
+        "sub_queries": [],
+        "search_queries": [],
+        "retrieved_chunks": [],
+        "reranked_chunks": [],
+        "evidence_map": {},
         "answer": "",
-        "confidence": 0.0,
-        "conflicts": [],
-        "retry_count": 0,
-        "warnings": [],
-        "trace": {},
-        "should_expand": False
+        "verification": {},
+        "needs_expansion": False,
+        "iteration_count": 0,
+        "final_answer": ""
     }
 
     try:
@@ -283,15 +276,26 @@ async def run_query(req: QueryRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Pipeline execution failed: {e}")
 
-    plan = final_state.get("plan", {})
-    sub_questions = plan.get("sub_questions", [])
-    search_queries = plan.get("search_queries", [req.query])
-    chunks = final_state.get("chunks", [])
+    # Extract Agentic RAG state variables (restored full pipeline)
+    sub_questions = final_state.get("sub_queries", [])
+    search_queries = final_state.get("search_queries", [req.query])
+    chunks = final_state.get("reranked_chunks", [])
+
+    # answer is now a string from AnswerGenerator.generate_grouped_answer
     grouped_answer = final_state.get("answer", "")
-    verification_result = final_state.get("verification_result", {})
-    summary_text = final_state.get("summary")
-    analysis_data = final_state.get("analysis_data", {})
-    warnings.extend(final_state.get("warnings", []))
+    if not isinstance(grouped_answer, str):
+        grouped_answer = str(grouped_answer)
+
+    verification_result = final_state.get("verification", {})
+    summary_text = final_state.get("final_answer")  # From PipelineSummarizer
+
+    # analysis_data is stored in evidence_map by generate_node
+    evidence_map = final_state.get("evidence_map", {})
+    analysis_data = evidence_map.get("analysis_data", {})
+
+    # Collect warnings safely
+    if isinstance(verification_result, dict):
+        warnings.extend(verification_result.get("penalties", verification_result.get("warnings", [])))
     
     # Optional: Fill tracer for existing UI expectation
     try:
@@ -299,7 +303,7 @@ async def run_query(req: QueryRequest):
             input_question=req.query,
             sub_questions=sub_questions,
             search_queries=search_queries,
-            llm_raw_output=plan.get("_raw_output", ""),
+            llm_raw_output=json.dumps({"sub_questions": sub_questions, "search_queries": search_queries}),
             latency_ms=0,
         )
         tracer.record_evidence_selection(
@@ -399,7 +403,7 @@ async def run_query(req: QueryRequest):
         mode=mode,
         status="success",
         planning={
-            "main_question": plan.get("main_question", req.query),
+            "main_question": req.query,
             "sub_questions": sub_questions,
             "search_queries": search_queries,
             "latency_ms": 0,

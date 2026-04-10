@@ -37,7 +37,7 @@ function confidenceBadgeClass(band: string): string {
 }
 
 function parseGroupedAnswer(text: string): ParsedSubQuestion[] {
-  const sections = text.split('🔹 Sub-question:').slice(1);
+  const sections = text.split(/🔹\s*Sub-question:?/).slice(1);
   const parsed: ParsedSubQuestion[] = [];
   for (const sec of sections) {
     const trimmed = sec.trim();
@@ -46,7 +46,7 @@ function parseGroupedAnswer(text: string): ParsedSubQuestion[] {
     const firstLineBreak = trimmed.indexOf('\n');
     const title = (firstLineBreak >= 0 ? trimmed.slice(0, firstLineBreak) : trimmed).trim();
 
-    const paperBlocks = trimmed.split('📄 Paper:').slice(1);
+    const paperBlocks = trimmed.split(/📄\s*Paper:?/).slice(1);
     const papers: ParsedPaper[] = [];
     for (const pb of paperBlocks) {
       const ptrim = pb.trim();
@@ -55,9 +55,11 @@ function parseGroupedAnswer(text: string): ParsedSubQuestion[] {
       const paperTitle = (pLineBreak >= 0 ? ptrim.slice(0, pLineBreak) : ptrim).trim();
 
       const units: ParsedEvidenceUnit[] = [];
-      const unitRegex = /\[(\d+)\] Section:\s*(.+?)\nLocation:\s*(.+?)\nRelevance:\s*([0-9.]+)\s*\|\s*SubQ Similarity:\s*([0-9.]+)\s*\|\s*Confidence:\s*([0-9.]+)\s*\((.+?)\)\n\nText:\n"([\s\S]*?)"/g;
+      const unitRegex = /\[(\d+)\]\s*Section:\s*(.+?)\n\s*Location:\s*(.+?)\n\s*Relevance:\s*([0-9.]+)\s*\|?\s*SubQ\s*Similarity:\s*([0-9.]+)\s*\|?\s*Confidence:\s*([0-9.]+)\s*\((.+?)\)\s*\n\s*(?:Text|Evidence):?\s*\n?\s*"([\s\S]*?)"(?=\s*\n\s*(?:\[\d+\]|📄|⚠️|📊|🔹|$))/g;
       let m: RegExpExecArray | null;
+      const regexState = { lastIndex: 0 };
       while ((m = unitRegex.exec(ptrim)) !== null) {
+        regexState.lastIndex = unitRegex.lastIndex;
         units.push({
           section: m[2].trim(),
           location: m[3].trim(),
@@ -68,28 +70,67 @@ function parseGroupedAnswer(text: string): ParsedSubQuestion[] {
           text: m[8].trim(),
         });
       }
+      
+      if (units.length === 0) {
+        const fallbackUnitRegex = /\[\d+\].*?Text:\s*\n\s*"([\s\S]*?)"/g;
+        let fm: RegExpExecArray | null;
+        while ((fm = fallbackUnitRegex.exec(ptrim)) !== null) {
+          units.push({
+            section: 'unknown',
+            location: 'unknown',
+            relevance: '0.00',
+            subqSimilarity: '0.00',
+            confidence: '0.00',
+            confidenceBand: 'Unknown',
+            text: fm[1].trim(),
+          });
+        }
+      }
       papers.push({ title: paperTitle, units });
     }
 
-    const conflictStart = trimmed.indexOf('⚠️ Cross-Paper Conflict Analysis');
-    const comparisonStart = trimmed.indexOf('📊 Comparison Summary');
-    const synthesisStart = trimmed.indexOf('🧩 Final Synthesis');
+    const conflictStart = trimmed.search(/⚠️\s*Cross-Paper\s*Conflict/);
+    const comparisonStart = trimmed.search(/📊\s*Comparison\s*Summary/);
+    const synthesisStart = trimmed.search(/🧩\s*Final\s*Synthesis/);
 
     let conflict = '';
     let comparison = '';
     let synthesis = '';
 
-    if (conflictStart >= 0 && comparisonStart > conflictStart) {
-      conflict = trimmed.slice(conflictStart, comparisonStart).trim();
+    if (conflictStart >= 0) {
+      const endIdx = comparisonStart > conflictStart ? comparisonStart : (synthesisStart > conflictStart ? synthesisStart : trimmed.length);
+      conflict = trimmed.slice(conflictStart, endIdx).trim();
     }
-    if (comparisonStart >= 0 && synthesisStart > comparisonStart) {
-      comparison = trimmed.slice(comparisonStart, synthesisStart).trim();
+    if (comparisonStart >= 0) {
+      const endIdx = synthesisStart > comparisonStart ? synthesisStart : trimmed.length;
+      comparison = trimmed.slice(comparisonStart, endIdx).trim();
     }
     if (synthesisStart >= 0) {
       synthesis = trimmed.slice(synthesisStart).trim();
     }
 
     parsed.push({ title, papers, conflict, comparison, synthesis });
+  }
+  
+  if (parsed.length === 0 && text.trim()) {
+    parsed.push({
+      title: 'Research Synthesis',
+      papers: [{
+        title: 'Results',
+        units: [{
+          section: 'results',
+          location: 'unknown',
+          relevance: '0.00',
+          subqSimilarity: '0.00',
+          confidence: '0.00',
+          confidenceBand: 'Unknown',
+          text: text.slice(0, 500),
+        }],
+      }],
+      conflict: '',
+      comparison: '',
+      synthesis: '',
+    });
   }
   return parsed;
 }
@@ -359,7 +400,7 @@ export default function ResultsPanel({ result }: Props) {
                   style={{ width: '100%', padding: '13px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'transparent', border: 'none', cursor: 'pointer', textAlign: 'left', borderBottom: open ? '1px solid var(--border)' : 'none' }}
                 >
                   <span style={{ fontSize: 11, color: 'var(--text-muted)', letterSpacing: '0.1em' }}>{String(idx + 1).padStart(2, '0')}</span>
-                  <span style={{ flex: 1, marginLeft: 10, fontSize: 34, fontFamily: 'var(--font-display)', color: 'var(--text-primary)', lineHeight: 1.05 }}>{sub.title}</span>
+                  <span style={{ flex: 1, marginLeft: 10, fontSize: 20, fontFamily: 'var(--font-display)', color: 'var(--text-primary)', lineHeight: 1.2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sub.title}</span>
                   {open ? <ChevronDown size={14} style={{ color: 'var(--text-muted)' }} /> : <ChevronRight size={14} style={{ color: 'var(--text-muted)' }} />}
                 </button>
 

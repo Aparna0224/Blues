@@ -1,20 +1,18 @@
-# FILE: src/orchestration/state.py
-from typing import Optional, List, TypedDict
+from typing import TypedDict, List, Dict, Any
 
 class ResearchState(TypedDict):
     """
-    Shared state object for the LangGraph agentic pipeline.
-    Passed through every node during execution.
+    STRICT Agentic RAG State Definition.
+    Preserves all execution boundaries and controls LangGraph flow.
     """
     query: str
-    user_level: str
-    plan: Optional[dict]          # populated by plan_node
-    chunks: List[dict]            # populated/expanded by retrieve_node / expand_node
-    answer: Optional[str]         # populated by generate_node
-    confidence: Optional[float]   # populated by verify_node
-    conflicts: List[dict]         # populated by generate_node
-    retry_count: int              # incremented by expand_node (max 2)
-    warnings: List[str]           # populated by verify_node
-    trace: dict                   # appended by every node
-    should_expand: bool           # set by verify_node, read by router
-    analysis_data: Optional[dict] # populated by generate_node
+    sub_queries: List[str]
+    search_queries: List[str]
+    retrieved_chunks: List[Dict[str, Any]]
+    reranked_chunks: List[Dict[str, Any]]
+    evidence_map: Dict[str, Any]
+    answer: Any  # Can be string or structured elements mapped before final JSON conversion
+    verification: Dict[str, Any]
+    needs_expansion: bool
+    iteration_count: int
+    final_answer: str

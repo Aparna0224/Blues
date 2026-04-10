@@ -7,6 +7,7 @@ import QueryForm from './components/QueryForm';
 import FileUpload from './components/FileUpload';
 import LoadingSpinner from './components/LoadingSpinner';
 import StatusBar from './components/StatusBar';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import {
   ConflictMapView,
   CurrentQueryView,
@@ -393,19 +394,21 @@ function App() {
               </div>
             )}
 
-            <div style={{ minHeight: 540 }}>
-              {isLoading && <LoadingSpinner currentStage={loadingStage} stages={loadingStages} />}
+            <ErrorBoundary>
+              <div style={{ minHeight: 540 }}>
+                {isLoading && <LoadingSpinner currentStage={loadingStage} stages={loadingStages} />}
 
-              {error && <PipelineErrorCard error={error} onDismiss={() => setError('')} />}
+                {error && <PipelineErrorCard error={error} onDismiss={() => setError('')} />}
 
-              {pausedActionsMessage && (
-                <div style={{ marginBottom: 14, border: '1px solid rgba(180,83,9,0.3)', background: 'rgba(180,83,9,0.08)', color: '#8a5300', borderRadius: 10, padding: '10px 12px', fontSize: 12, fontWeight: 600 }}>
-                  {pausedActionsMessage}
-                </div>
-              )}
+                {pausedActionsMessage && (
+                  <div style={{ marginBottom: 14, border: '1px solid rgba(180,83,9,0.3)', background: 'rgba(180,83,9,0.08)', color: '#8a5300', borderRadius: 10, padding: '10px 12px', fontSize: 12, fontWeight: 600 }}>
+                    {pausedActionsMessage}
+                  </div>
+                )}
 
-              {!isLoading && renderActiveView()}
-            </div>
+                {!isLoading && renderActiveView()}
+              </div>
+            </ErrorBoundary>
           </div>
         </div>
       </div>
