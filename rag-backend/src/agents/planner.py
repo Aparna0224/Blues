@@ -23,33 +23,57 @@ class PlannerAgent:
     It only plans.
     """
     
-    PLANNER_PROMPT = """You are a research planning agent.
+    PLANNER_SYSTEM_PROMPT = """
+You are a precise academic research decomposition engine.
+Your ONLY function is to decompose a research question into logically subordinate sub-questions and keyword search queries.
 
-Your task is to decompose a research question into structured sub-questions and search queries.
+HARD RULES — violating any of these is a failure:
+1. SUBORDINATION: Every sub-question must be a NARROWER, MORE SPECIFIC version of the main question.
+   The main question is the parent. Sub-questions are children. A child must share the core subject with its parent.
+2. NO DRIFT: Never introduce a concept, technology, domain, or topic not present in the main question.
+   If the main question is about "white blood cell detection in microscopy", sub-questions must all be about that — not "what is machine learning" or "what is image processing" in general.
+3. NO GENERIC BACKGROUND: Do not generate definitional sub-questions ("What is X?") unless the main question explicitly asks for a definition or overview.
+4. SEARCH QUERY SPECIFICITY: Each search query must be a 3–7 keyword phrase directly derived from a sub-question. No filler words.
+5. JSON ONLY: Output only a valid JSON object. No markdown, no explanation, no preamble.
 
-Rules:
-1. Generate 2-4 sub-questions that break down the main question
-2. Generate 2-4 search queries optimized for academic paper retrieval
-3. Search queries should be keyword-focused, not full sentences
-4. Return ONLY valid JSON, no explanations
+SELF-CHECK — before outputting, mentally verify each sub-question by asking:
+"If I answer this sub-question, does it DIRECTLY contribute to answering the main question?"
+If the answer is NO or MAYBE, replace or remove the sub-question.
 
-Input Question:
-{question}
-
-Return this exact JSON structure:
-{{
-  "main_question": "the original question",
+OUTPUT FORMAT:
+{
+  "main_question": "<exact original question>",
   "sub_questions": [
-    "sub-question 1",
-    "sub-question 2"
+    "<specific aspect 1 directly within scope of main question>",
+    "<specific aspect 2 directly within scope of main question>",
+    "<specific aspect 3 directly within scope of main question>"
   ],
   "search_queries": [
-    "search query 1",
-    "search query 2"
+    "<3-7 keyword search query for sub-question 1>",
+    "<3-7 keyword search query for sub-question 2>",
+    "<3-7 keyword search query for sub-question 3>"
   ]
-}}
+}
 
-JSON Output:"""
+EXAMPLE (correct):
+Main question: "What deep learning architectures are used for retinal vessel segmentation?"
+Good sub-questions:
+  - "Which CNN architectures achieve highest accuracy in retinal vessel segmentation?"
+  - "How do U-Net variants perform on DRIVE and STARE retinal datasets?"
+  - "What loss functions are used to handle class imbalance in retinal segmentation?"
+Bad sub-questions (NEVER generate these):
+  - "What is deep learning?" ← too generic, not subordinate
+  - "What are segmentation techniques in general?" ← drifts from retinal domain
+  - "What datasets exist in medical imaging?" ← too broad
+"""
+
+    PLANNER_USER_TEMPLATE = """
+Main question: {question}
+User level: {user_level}
+Detected domain: {domain}
+
+Decompose this question following all rules above. Every sub-question must be logically contained within the main question scope.
+"""
 
     LEVEL_GUIDANCE = {
         "beginner": "Include definitions, basics, and conceptual overview before methods.",
@@ -200,12 +224,13 @@ JSON Output:"""
             }
             return hand_plan
 
-        level_prompt = (
-            f"\n\nResearch level: {resolved_level}\n"
-            f"Guidance: {self.LEVEL_GUIDANCE.get(resolved_level, self.LEVEL_GUIDANCE['intermediate'])}\n"
-            "Do not include unrelated background topics unless explicitly asked by the query."
+        level_prompt_domain = self._extract_topic_keywords(question)
+        user_prompt = self.PLANNER_USER_TEMPLATE.format(
+            question=question,
+            user_level=resolved_level,
+            domain=level_prompt_domain
         )
-        prompt = self.PLANNER_PROMPT.format(question=question + level_prompt)
+        prompt = f"{self.PLANNER_SYSTEM_PROMPT}\n{user_prompt}"
         
         print(f"🧠 Planning query decomposition...")
         
@@ -213,13 +238,22 @@ JSON Output:"""
             raw_output = self.llm.generate(prompt)
             plan = self._parse_json(raw_output)
             
-            # Validate plan structure
+            # Validate plan structure baseline
             plan = self._validate_plan(plan, question)
+            
+            # 1. Coherence Validator
+            plan = self._validate_coherence(question, plan)
+            
+            # 2. Inject comparison
+            plan = self._inject_comparison_plan(plan, question)
+            
+            # 3. Prune background
             plan["sub_questions"] = self._prune_background_subquestions(
                 plan.get("sub_questions", []),
                 resolved_level,
                 question,
             )
+            
             plan["resolved_user_level"] = resolved_level
             plan["subquestion_intents"] = {
                 sq: self._classify_subquestion_intent(sq)
@@ -228,9 +262,6 @@ JSON Output:"""
             
             print(f"✓ Generated plan with {len(plan['sub_questions'])} sub-questions")
             print(f"✓ Generated {len(plan['search_queries'])} search queries")
-
-            # ── Inject comparison-aware sub-questions & queries ───
-            plan = self._inject_comparison_plan(plan, question)
 
             return plan
             
@@ -277,6 +308,62 @@ JSON Output:"""
         except json.JSONDecodeError as e:
             raise ValueError(f"Failed to parse JSON: {e}\nRaw output: {raw_output[:500]}")
     
+    def _validate_coherence(self, main_query: str, plan: dict) -> dict:
+        """
+        Remove or salvage sub-questions that share insufficient token overlap with main query.
+        Threshold: sub-question must share >= 25% meaningful tokens with main query.
+        """
+        STOPWORDS = {
+            "what", "which", "where", "when", "does", "have", "this", "that",
+            "with", "from", "into", "they", "them", "their", "about", "used",
+            "using", "based", "approach", "method", "methods", "technique",
+            "techniques", "system", "model", "models", "paper", "study",
+            "research", "work", "works", "review", "survey"
+        }
+
+        def meaningful_tokens(text: str) -> set:
+            return {
+                w.lower() for w in text.split()
+                if len(w) > 3 and w.lower() not in STOPWORDS
+            }
+
+        main_tokens = meaningful_tokens(main_query)
+        if not main_tokens:
+            return plan  # Cannot validate, pass through
+
+        validated_subqs = []
+        for sq in plan.get("sub_questions", []):
+            sq_tokens = meaningful_tokens(sq)
+            if not sq_tokens:
+                continue
+            overlap = len(main_tokens & sq_tokens) / max(len(main_tokens), 1)
+            if overlap >= 0.25:
+                validated_subqs.append(sq)
+            else:
+                # Salvage
+                core = " ".join(list(main_tokens)[:4])
+                salvaged = f"{sq} specifically in the context of {core}"
+                validated_subqs.append(salvaged)
+
+        validated_queries = []
+        for sq in plan.get("search_queries", []):
+            sq_tokens = meaningful_tokens(sq)
+            overlap = len(main_tokens & sq_tokens) / max(len(main_tokens), 1)
+            if overlap >= 0.15:
+                validated_queries.append(sq)
+
+        # Hard floor
+        if len(validated_subqs) < 2:
+            subq_from_fallback = self._fallback_plan(main_query)["sub_questions"]
+            validated_subqs = subq_from_fallback
+        if len(validated_queries) < 2:
+            query_from_fallback = self._fallback_plan(main_query)["search_queries"]
+            validated_queries = query_from_fallback
+
+        plan["sub_questions"] = validated_subqs[:7]
+        plan["search_queries"] = validated_queries[:7]
+        return plan
+
     def _validate_plan(self, plan: Dict[str, Any], original_question: str) -> Dict[str, Any]:
         """
         Validate and fix plan structure.

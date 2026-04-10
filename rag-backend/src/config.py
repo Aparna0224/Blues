@@ -37,6 +37,9 @@ class Config:
     EVIDENCE_KEYWORD_MIN_OVERLAP = int(os.getenv("EVIDENCE_KEYWORD_MIN_OVERLAP", "1"))
     MIN_UNIQUE_PAPERS_FOR_CLAIMS = int(os.getenv("MIN_UNIQUE_PAPERS_FOR_CLAIMS", "2"))
     KEYWORD_MIN_OVERLAP = int(os.getenv("KEYWORD_MIN_OVERLAP", "2"))
+    MIN_CHUNKS_THRESHOLD = int(os.getenv("MIN_CHUNKS_THRESHOLD", "8"))
+    WEB_CRAWL_ENABLED = os.getenv("WEB_CRAWL_ENABLED", "True").lower() == "true"
+    BRAVE_API_KEY = os.getenv("BRAVE_API_KEY", "")
     FILTER_QUESTION_SENTENCES = os.getenv("FILTER_QUESTION_SENTENCES", "True").lower() == "true"
     ENABLE_DOMAIN_KEYWORD_GATE = os.getenv("ENABLE_DOMAIN_KEYWORD_GATE", "False").lower() == "true"
     DOMAIN_KEYWORD_MIN_OVERLAP = int(os.getenv("DOMAIN_KEYWORD_MIN_OVERLAP", "1"))

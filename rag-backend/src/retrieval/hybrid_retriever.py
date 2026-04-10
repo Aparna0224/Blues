@@ -11,6 +11,7 @@ where k is a smoothing constant (default 60).
 """
 
 from typing import List, Dict, Any, Optional
+import asyncio
 from src.config import Config
 from src.retrieval.bm25_index import BM25Index, get_bm25_index
 from src.retrieval.retriever import Retriever
@@ -74,181 +75,103 @@ class HybridRetriever:
             self._evidence_extractor = EvidenceExtractor()
         return self._evidence_extractor
 
-    def retrieve(
+    async def retrieve(
         self,
         query: str,
         top_k: int = 10,
         metadata_filters: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
-        """Perform hybrid retrieval for a single query.
-
-        Runs both BM25 and semantic search, fuses via RRF,
-        applies metadata filters post-fusion, then evidence extraction.
-
-        Args:
-            query: Search query string.
-            top_k: Number of top results to return after fusion.
-            metadata_filters: Optional filters applied post-fusion.
-
-        Returns:
-            List of chunk dicts sorted by fused RRF score descending.
-        """
+        """Perform hybrid retrieval for a single query."""
         # Run BM25 search
-        bm25_results = self.bm25_index.search(query, top_k=Config.BM25_TOP_K)
+        bm25_results = await asyncio.to_thread(self.bm25_index.search, query, Config.BM25_TOP_K)
 
-        # Run semantic search (FAISS only, no keyword/domain filters)
-        semantic_results = self.semantic_retriever.semantic_retrieve(
-            query, top_k=Config.BM25_TOP_K
-        )
+        # Run semantic search
+        semantic_results = await asyncio.to_thread(self.semantic_retriever.semantic_retrieve, query, Config.BM25_TOP_K)
 
-        # Fuse via RRF
         fused = self._rrf_fuse(bm25_results, semantic_results, k=Config.RRF_K)
 
-        # Apply metadata filters post-fusion
         if metadata_filters:
-            fused = [
-                c for c in fused
-                if Retriever._passes_metadata_filters(metadata_filters, c)
-            ]
+            fused = [c for c in fused if Retriever._passes_metadata_filters(metadata_filters, c)]
 
-        # Soft precision filtering (post-fusion)
         fused = self._apply_soft_filtering(query, fused)
-
-        # Limit to top_k
         fused = fused[:top_k]
 
-        # Evidence extraction last
         if self.use_evidence and fused:
-            fused = self._extract_evidence(query, fused)
+            fused = await asyncio.to_thread(self._extract_evidence, query, fused)
 
-        # Extract structured paper facts (Phase 2)
         if fused:
             from src.retrieval.paper_facts import extract_paper_facts
-            fused = extract_paper_facts(fused)
+            fused = await asyncio.to_thread(extract_paper_facts, fused)
 
         return fused
 
-    def multi_retrieve(
+    async def _retrieve_single_async(self, query: str, top_k_per_query: int) -> List[Dict[str, Any]]:
+        """Retrieve sequentially within one query context but callable concurrently."""
+        bm25_results = await asyncio.to_thread(self.bm25_index.search, query, Config.BM25_TOP_K)
+        semantic_results = await asyncio.to_thread(self.semantic_retriever.semantic_retrieve, query, Config.BM25_TOP_K)
+        
+        fused = self._rrf_fuse(bm25_results, semantic_results, k=Config.RRF_K)
+        
+        for chunk in fused[:top_k_per_query]:
+            chunk["matched_query"] = query
+        return fused[:top_k_per_query]
+
+    async def multi_retrieve(
         self,
         search_queries: List[str],
         top_k_per_query: int = 5,
         max_total: int = 15,
         metadata_filters: Optional[Dict[str, Any]] = None,
     ) -> List[Dict[str, Any]]:
-        """Hybrid retrieval for multiple sub-questions with independent per-query search.
-
-        For each sub-question:
-            1. Run BM25 search independently
-            2. Run semantic search independently
-            3. Fuse via RRF
-
-        Then:
-            4. Deduplicate across sub-questions by chunk_id (keep highest rrf_score)
-            5. Apply metadata filters post-fusion
-            6. Apply evidence extraction last
-
-        Args:
-            search_queries: List of decomposed search queries.
-            top_k_per_query: Number of results per sub-question after fusion.
-            max_total: Maximum total chunks after deduplication.
-            metadata_filters: Optional filters applied post-fusion.
-
-        Returns:
-            Deduplicated list of chunk dicts sorted by best RRF score.
-        """
         if not search_queries:
             return []
 
         print(f"🔍 Hybrid multi-query retrieval for {len(search_queries)} queries...")
 
-        # Collect all results, deduplicating by chunk_id across queries
+        # Run all sub-query retrievals concurrently
+        chunk_lists = await asyncio.gather(*[
+            self._retrieve_single_async(q, top_k_per_query) for q in search_queries
+        ])
+
         chunks_map: Dict[str, Dict[str, Any]] = {}
-
-        for query in search_queries:
-            print(f"  → Hybrid search: {query[:60]}...")
-
-            # BM25 search
-            bm25_results = self.bm25_index.search(
-                query, top_k=Config.BM25_TOP_K
-            )
-
-            # Semantic search (FAISS only)
-            semantic_results = self.semantic_retriever.semantic_retrieve(
-                query, top_k=Config.BM25_TOP_K
-            )
-
-            # Fuse via RRF
-            fused = self._rrf_fuse(
-                bm25_results, semantic_results, k=Config.RRF_K
-            )
-
-            # Take top_k_per_query from this sub-question
-            for chunk in fused[:top_k_per_query]:
+        for sublist in chunk_lists:
+            for chunk in sublist:
                 chunk_id = chunk.get("chunk_id")
-                if not chunk_id:
-                    continue
-
-                # Tag with matched query
-                chunk["matched_query"] = query
-
-                # Deduplicate: keep highest rrf_score
+                if not chunk_id: continue
                 if chunk_id in chunks_map:
-                    if chunk.get("rrf_score", 0) > chunks_map[chunk_id].get(
-                        "rrf_score", 0
-                    ):
+                    if chunk.get("rrf_score", 0) > chunks_map[chunk_id].get("rrf_score", 0):
                         chunks_map[chunk_id] = chunk
                 else:
                     chunks_map[chunk_id] = chunk
 
-        # Convert to sorted list
-        results = sorted(
-            chunks_map.values(),
-            key=lambda x: x.get("rrf_score", 0),
-            reverse=True,
-        )
+        results = sorted(chunks_map.values(), key=lambda x: x.get("rrf_score", 0), reverse=True)
 
-        # Apply metadata filters post-fusion
         if metadata_filters:
-            results = [
-                c for c in results
-                if Retriever._passes_metadata_filters(metadata_filters, c)
-            ]
+            results = [c for c in results if Retriever._passes_metadata_filters(metadata_filters, c)]
 
-        # Soft precision filtering (post-fusion and post-dedup)
         results = self._apply_soft_filtering(search_queries[0], results)
 
-        # Phase 6: Section-biased scoring per sub-query
         for query in search_queries:
             bias_sections = self._get_section_bias(query)
             if bias_sections:
                 for chunk in results:
-                    chunk_section = str(
-                        (chunk.get("metadata") or {}).get("section", chunk.get("section", ""))
-                    ).lower()
+                    chunk_section = str((chunk.get("metadata") or {}).get("section", chunk.get("section", ""))).lower()
                     if any(bs in chunk_section for bs in bias_sections):
                         chunk["final_score"] = chunk.get("final_score", chunk.get("rrf_score", 0)) * 1.15
                         chunk["section_bias_applied"] = True
 
-        # Re-sort after bias boost
         results.sort(key=lambda c: c.get("final_score", c.get("rrf_score", 0)), reverse=True)
-
-        # Limit to max_total
         results = results[:max_total]
 
-        print(
-            f"✓ Hybrid multi-retrieve found {len(results)} unique chunks "
-            f"from {len(search_queries)} queries"
-        )
+        print(f"✓ Hybrid multi-retrieve found {len(results)} unique chunks from {len(search_queries)} queries")
 
-        # Evidence extraction last
         if self.use_evidence and results:
             main_query = search_queries[0] if search_queries else ""
-            results = self._extract_evidence(main_query, results)
+            results = await asyncio.to_thread(self._extract_evidence, main_query, results)
 
-        # Extract structured paper facts (Phase 2)
         if results:
             from src.retrieval.paper_facts import extract_paper_facts
-            results = extract_paper_facts(results)
+            results = await asyncio.to_thread(extract_paper_facts, results)
 
         return results
 

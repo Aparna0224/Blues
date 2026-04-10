@@ -1,7 +1,8 @@
 """MongoDB connection and collection management."""
 
 from datetime import datetime, timezone
-from pymongo import MongoClient, ReturnDocument
+import asyncio
+from pymongo import MongoClient, ReturnDocument, UpdateOne
 from pymongo.errors import ServerSelectionTimeoutError, ConnectionFailure
 from src.config import Config
 
@@ -50,23 +51,30 @@ class MongoDBClient:
         # Papers collection
         if Config.MONGO_PAPERS_COLLECTION not in self.db.list_collection_names():
             self.db.create_collection(Config.MONGO_PAPERS_COLLECTION)
-            self.db[Config.MONGO_PAPERS_COLLECTION].create_index("paper_id", unique=True)
-            print(f"✓ Created collection: {Config.MONGO_PAPERS_COLLECTION}")
+        
+        self.db[Config.MONGO_PAPERS_COLLECTION].create_index("paper_id", unique=True)
+        self.db[Config.MONGO_PAPERS_COLLECTION].create_index([("year", -1)])
+        self.db[Config.MONGO_PAPERS_COLLECTION].create_index([("source", 1)])
+        print(f"✓ Created collection/indices: {Config.MONGO_PAPERS_COLLECTION}")
         
         # Chunks collection
         if Config.MONGO_CHUNKS_COLLECTION not in self.db.list_collection_names():
             self.db.create_collection(Config.MONGO_CHUNKS_COLLECTION)
-            self.db[Config.MONGO_CHUNKS_COLLECTION].create_index("chunk_id", unique=True)
-            self.db[Config.MONGO_CHUNKS_COLLECTION].create_index("paper_id")
-            print(f"✓ Created collection: {Config.MONGO_CHUNKS_COLLECTION}")
+            
+        self.db[Config.MONGO_CHUNKS_COLLECTION].create_index("chunk_id", unique=True)
+        self.db[Config.MONGO_CHUNKS_COLLECTION].create_index([("paper_id", 1), ("section", 1)])
+        print(f"✓ Created collection/indices: {Config.MONGO_CHUNKS_COLLECTION}")
         
         # Execution traces collection (Stage 5)
         if "execution_traces" not in self.db.list_collection_names():
             self.db.create_collection("execution_traces")
-            self.db["execution_traces"].create_index("execution_id", unique=True)
-            self.db["execution_traces"].create_index("timestamp")
-            self.db["execution_traces"].create_index("status")
-            print(f"✓ Created collection: execution_traces")
+            
+        self.db["execution_traces"].create_index("execution_id", unique=True)
+        self.db["execution_traces"].create_index("timestamp")
+        self.db["execution_traces"].create_index("status")
+        # Problem 3: TTL index to automatically drop traces older than 7 days
+        self.db["execution_traces"].create_index("created_at", expireAfterSeconds=604800)
+        print(f"✓ Created collection/indices: execution_traces")
 
         # Workspace projects
         if "projects" not in self.db.list_collection_names():
@@ -139,12 +147,40 @@ class MongoDBClient:
         if not self.initialized:
             self.connect()
         collection = self.db["execution_traces"]
+        # Add created_at if not present for TTL
+        if "created_at" not in trace:
+            trace["created_at"] = datetime.now(timezone.utc)
+            
         collection.replace_one(
             {"execution_id": trace["execution_id"]},
             trace,
             upsert=True,
         )
         return trace["execution_id"]
+
+    async def async_batch_upsert(self, collection_name: str, docs: list[dict], key_field: str) -> int:
+        """Asynchronously batch upsert documents using bulk_write."""
+        if not docs:
+            return 0
+        
+        if not self.initialized:
+            self.connect()
+            
+        collection = self.db[collection_name]
+        operations = [
+            UpdateOne(
+                {key_field: doc[key_field]},
+                {"$set": doc},
+                upsert=True
+            )
+            for doc in docs
+        ]
+        
+        def _bulk_write():
+            result = collection.bulk_write(operations, ordered=False)
+            return len(docs)
+            
+        return await asyncio.to_thread(_bulk_write)
     
     def get_trace(self, execution_id: str) -> dict | None:
         """Retrieve an execution trace by execution_id.

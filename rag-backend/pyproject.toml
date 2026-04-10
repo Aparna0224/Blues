@@ -7,31 +7,30 @@ description = "Retrieval-Augmented Generation System - Stage 1"
 requires-python = ">=3.11"
 dependencies = [
     # Core dependencies
-    "requests>=2.31.0",           # HTTP client for OpenAlex/Semantic Scholar APIs
-    "python-dotenv>=1.0.0",       # Environment variable management
-    "click>=8.1.0",               # CLI framework
-    
+    "requests>=2.31.0", # HTTP client for OpenAlex/Semantic Scholar APIs
+    "python-dotenv>=1.0.0", # Environment variable management
+    "click>=8.1.0", # CLI framework
     # NLP & Embeddings
-    "nltk>=3.8.1",                # Sentence tokenization
+    "nltk>=3.8.1", # Sentence tokenization
     "sentence-transformers>=2.2.2", # SciBERT embeddings
-    "numpy>=1.24.0",              # Numerical operations
-    
+    "numpy>=1.24.0", # Numerical operations
     # Vector Store
-    "faiss-cpu>=1.7.4",           # FAISS vector search
-    "rank-bm25>=0.2.2",           # BM25 keyword search for hybrid retrieval
-    
+    "faiss-cpu>=1.7.4", # FAISS vector search
+    "rank-bm25>=0.2.2", # BM25 keyword search for hybrid retrieval
     # Database (for later - commented for testing)
-    "pymongo>=4.6.0",             # MongoDB driver
-    
+    "pymongo>=4.6.0", # MongoDB driver
     # Full-text extraction
-    "pymupdf>=1.23.0",            # PDF text extraction (PyMuPDF / fitz)
-    "beautifulsoup4>=4.12.0",     # HTML text extraction
-    
+    "pymupdf>=1.23.0", # PDF text extraction (PyMuPDF / fitz)
+    "beautifulsoup4>=4.12.0", # HTML text extraction
     # API Server (Stage 6)
-    "fastapi>=0.115.0",           # REST API framework
-    "uvicorn[standard]>=0.30.0",  # ASGI server
-    "python-multipart>=0.0.9",    # File upload support
-    "reportlab>=4.2.0",           # PDF report export
+    "fastapi>=0.115.0", # REST API framework
+    "uvicorn[standard]>=0.30.0", # ASGI server
+    "python-multipart>=0.0.9", # File upload support
+    "reportlab>=4.2.0", # PDF report export
+    "langgraph>=1.1.6",
+    "crawl4ai>=0.8.6",
+    "lxml>=5.4.0",
+    "playwright>=1.58.0",
 ]
 
 [tool.uv]
