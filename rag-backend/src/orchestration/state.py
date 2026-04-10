@@ -8,6 +8,7 @@ class ResearchState(TypedDict):
     query: str
     sub_queries: List[str]
     search_queries: List[str]
+    paper_source: str  # Paper source: openalex, semantic_scholar, arxiv, both, all
     retrieved_chunks: List[Dict[str, Any]]
     reranked_chunks: List[Dict[str, Any]]
     evidence_map: Dict[str, Any]

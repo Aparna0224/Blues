@@ -423,9 +423,12 @@ class PaperIngestor:
     def _normalize_semantic_scholar_paper(self, work: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Normalize Semantic Scholar paper data."""
         try:
-            # Skip if no abstract
-            abstract = work.get("abstract")
-            if not abstract:
+            # Accept papers with or without abstract
+            abstract = work.get("abstract") or ""
+
+            # Skip if no title
+            title = work.get("title", "").strip()
+            if not title:
                 return None
 
             # Open access PDF URL
@@ -439,12 +442,12 @@ class PaperIngestor:
             # Extract external IDs (DOI, PMCID, etc.)
             ext_ids = work.get("externalIds") or {}
             doi = ext_ids.get("DOI", "") or ""
-            pmcid = ext_ids.get("PMCID", "") or ""  # e.g. "PMC12345678"
+            pmcid = ext_ids.get("PMCID", "") or ""
             pmid = str(ext_ids.get("PubMed", "")) if ext_ids.get("PubMed") else ""
 
             paper = {
                 "paper_id": work.get("paperId", ""),
-                "title": work.get("title", ""),
+                "title": title,
                 "abstract": abstract,
                 "year": work.get("year", 0) or 0,
                 "citation_count": work.get("citationCount", 0) or 0,

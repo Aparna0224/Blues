@@ -261,6 +261,7 @@ async def run_query(req: QueryRequest):
         "query": req.query,
         "sub_queries": [],
         "search_queries": [],
+        "paper_source": req.paper_source,
         "retrieved_chunks": [],
         "reranked_chunks": [],
         "evidence_map": {},

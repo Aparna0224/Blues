@@ -81,8 +81,10 @@ async def retrieve_node(state: ResearchState) -> ResearchState:
     all_chunks = []
 
     # --- Stage 1: Dynamic API retrieval (fetches NEW papers) ---
+    paper_source = state.get("paper_source", "both")
     try:
-        dynamic = DynamicRetriever(use_evidence=True, papers_per_query=5)
+        dynamic = DynamicRetriever(use_evidence=True, papers_per_query=5, source=paper_source)
+        print(f"   Using paper source: {paper_source}")
         api_chunks = await dynamic.retrieve(
             search_queries=queries,
             main_query=state["query"],

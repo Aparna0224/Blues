@@ -55,7 +55,7 @@ function parseGroupedAnswer(text: string): ParsedSubQuestion[] {
       const paperTitle = (pLineBreak >= 0 ? ptrim.slice(0, pLineBreak) : ptrim).trim();
 
       const units: ParsedEvidenceUnit[] = [];
-      const unitRegex = /\[(\d+)\]\s*Section:\s*(.+?)\n\s*Location:\s*(.+?)\n\s*Relevance:\s*([0-9.]+)\s*\|?\s*SubQ\s*Similarity:\s*([0-9.]+)\s*\|?\s*Confidence:\s*([0-9.]+)\s*\((.+?)\)\s*\n\s*(?:Text|Evidence):?\s*\n?\s*"([\s\S]*?)"(?=\s*\n\s*(?:\[\d+\]|📄|⚠️|📊|🔹|$))/g;
+      const unitRegex = /\[(\d+)\]\s*Section:\s*(.+?)\n\s*Location:\s*(.+?)(?:\n\[[^\]]+\])*\n\s*Relevance:\s*([0-9.]+)\s*\|?\s*SubQ\s*Similarity:\s*([0-9.]+)\s*\|?\s*Confidence:\s*([0-9.]+)\s*\((.+?)\)\s*(?:\n)+Text:\s*\n\s*"([\s\S]*?)"\s*(?=(?:\n)+---)/g;
       let m: RegExpExecArray | null;
       const regexState = { lastIndex: 0 };
       while ((m = unitRegex.exec(ptrim)) !== null) {
@@ -72,7 +72,7 @@ function parseGroupedAnswer(text: string): ParsedSubQuestion[] {
       }
       
       if (units.length === 0) {
-        const fallbackUnitRegex = /\[\d+\].*?Text:\s*\n\s*"([\s\S]*?)"/g;
+        const fallbackUnitRegex = /\[\d+\][^\n]*\n[^\n]*(?:\n\[[^\]]+\])*(?:\n)+Text:\s*\n\s*"([\s\S]*?)"\s*(?=(?:\n)+---)/g;
         let fm: RegExpExecArray | null;
         while ((fm = fallbackUnitRegex.exec(ptrim)) !== null) {
           units.push({
