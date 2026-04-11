@@ -31,6 +31,7 @@ dependencies = [
     "crawl4ai>=0.8.6",
     "lxml>=5.4.0",
     "playwright>=1.58.0",
+    "pydantic-ai>=0.0.30",
 ]
 
 [tool.uv]

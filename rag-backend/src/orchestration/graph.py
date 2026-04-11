@@ -18,6 +18,7 @@ from src.orchestration.state import ResearchState
 # Import Agents and Modules
 from src.llm.factory import get_llm
 from src.agents.planner import PlannerAgent
+from src.agents.planner_validator import PlannerValidatorAgent
 from src.agents.verifier import VerifierAgent
 from src.retrieval.reranker import GlobalReranker
 from src.evidence.extractor import EvidenceExtractor
@@ -25,6 +26,7 @@ from src.evidence.extractor import EvidenceExtractor
 # Lazy-loaded heavy modules (avoid circular imports at module level)
 _llm = None
 _planner = None
+_planner_validator = None
 _verifier = None
 _evidence_extractor = None
 
@@ -39,6 +41,13 @@ def _get_planner():
     if _planner is None:
         _planner = PlannerAgent(_get_llm())
     return _planner
+
+
+def _get_planner_validator():
+    global _planner_validator
+    if _planner_validator is None:
+        _planner_validator = PlannerValidatorAgent()
+    return _planner_validator
 
 def _get_verifier():
     global _verifier
@@ -65,7 +74,69 @@ async def plan_node(state: ResearchState) -> ResearchState:
         "sub_queries": plan["sub_questions"],
         "search_queries": plan["search_queries"],
         "iteration_count": state.get("iteration_count", 0),
+        "_planner_output": plan,
     }
+
+
+async def validate_node(state: ResearchState) -> ResearchState:
+    """Validate planner output using Pydantic AI."""
+    print("🔍 [ValidateNode] Validating planner output with Pydantic AI...")
+    
+    planner_output = {
+        "main_query": state["query"],
+        "sub_questions": state.get("sub_queries", []),
+        "search_queries": state.get("search_queries", []),
+    }
+    
+    validator = _get_planner_validator()
+    
+    try:
+        validation_result, decision = await validator.validate(
+            main_query=state["query"],
+            planner_output=planner_output,
+        )
+        
+        print(f"   Validation: is_valid={validation_result.is_valid}, "
+              f"coverage={validation_result.coverage_score:.2f}, "
+              f"diversity={validation_result.diversity_score:.2f}")
+        
+        if validation_result.issues:
+            print(f"   Issues: {validation_result.issues}")
+        
+        if decision.action == "accept":
+            print("   ✅ Planner output validated successfully")
+            return {
+                "sub_queries": state["sub_queries"],
+                "search_queries": state["search_queries"],
+                "_validation_result": validation_result.model_dump(),
+            }
+        
+        elif decision.action == "retry" and decision.corrected_output:
+            print(f"   🔄 Using corrected output: {decision.reason}")
+            return {
+                "sub_queries": decision.corrected_output.sub_questions,
+                "search_queries": decision.corrected_output.search_queries,
+                "_validation_result": validation_result.model_dump(),
+                "_validation_action": "retry",
+            }
+        
+        else:
+            print(f"   ⚠ Using fallback output: {decision.reason}")
+            return {
+                "sub_queries": decision.corrected_output.sub_questions,
+                "search_queries": decision.corrected_output.search_queries,
+                "_validation_result": validation_result.model_dump(),
+                "_validation_action": "fallback",
+            }
+            
+    except Exception as e:
+        print(f"   ⚠ Validation failed: {e}")
+        return {
+            "sub_queries": state["sub_queries"],
+            "search_queries": state["search_queries"],
+            "_validation_result": {"error": str(e)},
+            "_validation_action": "error",
+        }
 
 
 async def retrieve_node(state: ResearchState) -> ResearchState:
@@ -321,6 +392,7 @@ def build_research_graph() -> StateGraph:
     workflow = StateGraph(ResearchState)
 
     workflow.add_node("plan", plan_node)
+    workflow.add_node("validate", validate_node)
     workflow.add_node("retrieve", retrieve_node)
     workflow.add_node("rerank", rerank_node)
     workflow.add_node("generate", generate_node)
@@ -328,9 +400,10 @@ def build_research_graph() -> StateGraph:
     workflow.add_node("expand", expand_node)
     workflow.add_node("summarize", summarize_node)
 
-    # Strict linear flow
+    # Strict linear flow with validation
     workflow.set_entry_point("plan")
-    workflow.add_edge("plan", "retrieve")
+    workflow.add_edge("plan", "validate")
+    workflow.add_edge("validate", "retrieve")
     workflow.add_edge("retrieve", "rerank")
     workflow.add_edge("rerank", "generate")
     workflow.add_edge("generate", "verify")

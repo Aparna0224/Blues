@@ -23,10 +23,11 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query
 from fastapi.responses import Response
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from src.config import Config
 from src.database import get_mongo_client
+from src.validation.schemas import validate_llm_output, validate_grouped_answer, ValidatedQueryResponse
 
 # ─── App ─────────────────────────────────────────────────────────
 
@@ -368,6 +369,15 @@ async def run_query(req: QueryRequest):
         analysis_data["query"] = req.query
         analysis_data["generated_at"] = datetime.now(timezone.utc).isoformat()
         analysis_data["final_summary"] = summary_text or ""
+        
+        # Validate grouped answer analysis structure
+        try:
+            validated_analysis = validate_grouped_answer(analysis_data)
+            analysis_data = validated_analysis.model_dump()
+        except ValidationError as ve:
+            print(f"⚠ Grouped answer validation warning: {ve.errors()}")
+            warnings.append(f"Analysis structure warning: {ve.errors()[0]['msg'] if ve.errors() else 'Validation issue'}")
+        
         # Enrich references from papers_found when available (DOI/link mandatory in export).
         paper_lookup = {p.get("paper_id", ""): p for p in papers_found}
         for ref in analysis_data.get("references", []):
@@ -417,6 +427,30 @@ async def run_query(req: QueryRequest):
         total_time_ms=total_ms,
         warnings=warnings,
     )
+
+    # ── Validate LLM output with Pydantic before returning ──────────────
+    try:
+        response_dict = response_payload.model_dump()
+        validated = validate_llm_output(response_dict)
+        response_payload = ValidatedQueryResponse(
+            execution_id=validated.execution_id,
+            query=validated.query,
+            mode=validated.mode,
+            status=validated.status,
+            planning=validated.planning.model_dump(),
+            grouped_answer=validated.grouped_answer,
+            chunks_used=validated.chunks_used,
+            papers_found=[p.model_dump() if hasattr(p, 'model_dump') else p for p in validated.papers_found],
+            verification=validated.verification.model_dump(),
+            summary=validated.summary,
+            total_time_ms=validated.total_time_ms,
+            warnings=validated.warnings,
+        )
+    except ValidationError as ve:
+        error_details = ve.errors()
+        print(f"⚠ LLM output validation failed: {error_details}")
+        warnings.append(f"Output validation warning: {error_details[0]['msg'] if error_details else 'Unknown error'}")
+        response_payload.warnings = warnings
 
     # Persist query + full result for project history / reopen workflow
     try:
