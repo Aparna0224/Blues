@@ -11,7 +11,7 @@ import os
 from typing import Optional
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.openai import OpenAIModel
-from pydantic_ai.result import AgentRunResult
+from pydantic_ai import AgentRunResult
 
 from src.validation.pydantic_ai_schemas import (
     PlannerOutputValidation,
@@ -55,11 +55,22 @@ class PlannerValidatorAgent:
     """
     
     def __init__(self, model: Optional[str] = None):
-        model_name = model or os.getenv("VALIDATION_MODEL", "openai:gpt-4o-mini")
-        
+        if model:
+            model_name = model
+        elif os.getenv("VALIDATION_MODEL"):
+            model_name = os.getenv("VALIDATION_MODEL")
+        else:
+            provider = os.getenv("LLM_PROVIDER", "groq")
+            if provider == "groq":
+                model_name = f"groq:{os.getenv('GROQ_MODEL', 'llama-3.3-70b-versatile')}"
+            elif provider == "gemini":
+                model_name = f"gemini-gla:{os.getenv('GEMINI_MODEL', 'gemini-2.0-flash')}"
+            else:
+                model_name = "openai:gpt-4o-mini"
+
         self._agent = Agent(
             model=model_name,
-            result_type=PlannerOutputValidation,
+            output_type=PlannerOutputValidation,
             system_prompt=SYSTEM_PROMPT,
         )
     
@@ -85,7 +96,7 @@ class PlannerValidatorAgent:
         
         try:
             result: AgentRunResult[PlannerOutputValidation] = await self._agent.run(user_prompt)
-            validation = result.data
+            validation = result.output
             decision = self._make_decision(validation, planner_output)
             return validation, decision
             
@@ -100,7 +111,6 @@ class PlannerValidatorAgent:
         search_queries: list[str],
     ) -> str:
         """Build the validation prompt."""
-        sq_json = "\n".join(f'  "{i+1}. {sq.replace('"', '\\"')}"' for i, sq in enumerate(sub_questions))
         sq_list = "\n".join(f"- {sq}" for sq in sub_questions)
         sq_queries = "\n".join(f"- {q}" for q in search_queries)
         

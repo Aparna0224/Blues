@@ -80,6 +80,9 @@ class VerificationResult(BaseModel):
     claims_supported: int = Field(default=0, ge=0)
     claims_contradicted: int = Field(default=0, ge=0)
     evidence_sources: List[str] = Field(default_factory=list)
+    metrics: Dict[str, Any] = Field(default_factory=dict)
+    warnings: List[str] = Field(default_factory=list)
+    audit: Dict[str, Any] = Field(default_factory=dict)
 
 
 class PaperInfo(BaseModel):

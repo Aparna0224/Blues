@@ -19,11 +19,11 @@ function getMeta(label: string) {
 
 export default function VerificationCard({ verification }: Props) {
   const v = verification;
-  const m = v.metrics;
-  const label = getLabel(v.confidence_score);
+  const m = v.metrics || {};
+  const label = getLabel(v.confidence_score || 0);
   const meta = getMeta(label);
   const Icon = meta.Icon;
-  const pct = Math.round(v.confidence_score * 100);
+  const pct = Math.round((v.confidence_score || 0) * 100);
   const hasConflicts = m.conflicts_detected === true || (Array.isArray(m.conflicts_detected) && m.conflicts_detected.length > 0);
   const conflictDetails = Array.isArray(m.conflicts_detected) ? m.conflicts_detected : [];
 
@@ -51,10 +51,10 @@ export default function VerificationCard({ verification }: Props) {
       {/* Metrics grid */}
       <div style={{ paddingInline: 20, paddingBottom: 16, display: 'grid', gridTemplateColumns: 'repeat(2,1fr)', gap: 8 }}>
         {[
-          { label: 'Avg. Similarity', val: (m.avg_similarity * 100).toFixed(1) + '%' },
-          { label: 'Source Diversity', val: (m.normalized_source_diversity * 100).toFixed(1) + '%' },
-          { label: 'Evidence Density', val: (m.evidence_density * 100).toFixed(1) + '%' },
-          { label: 'Claims Used', val: String(v.audit.claims_used_for_scoring) },
+          { label: 'Avg. Similarity', val: ((m.avg_similarity || 0) * 100).toFixed(1) + '%' },
+          { label: 'Source Diversity', val: ((m.normalized_source_diversity || 0) * 100).toFixed(1) + '%' },
+          { label: 'Evidence Density', val: ((m.evidence_density || 0) * 100).toFixed(1) + '%' },
+          { label: 'Claims Used', val: String(v.audit?.claims_used_for_scoring || 0) },
         ].map(({ label: l, val }) => (
           <div key={l} style={{ padding: '10px 14px', borderRadius: 10, background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)', textAlign: 'center' }}>
             <p style={{ margin: 0, fontSize: 9, fontWeight: 500, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 4 }}>{l}</p>

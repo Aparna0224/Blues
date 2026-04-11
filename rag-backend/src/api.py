@@ -432,7 +432,7 @@ async def run_query(req: QueryRequest):
     try:
         response_dict = response_payload.model_dump()
         validated = validate_llm_output(response_dict)
-        response_payload = ValidatedQueryResponse(
+        response_payload = QueryResponse(
             execution_id=validated.execution_id,
             query=validated.query,
             mode=validated.mode,
